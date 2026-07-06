@@ -36,6 +36,21 @@ const STABLES=[
 const BORROWABLE={USDC:true,USDT:true,USDe:true,PYUSD:true,USDS:true,FDUSD:false,AUSD:false,USDG:false,USD1:false};
 const MINTS=STABLES.map(s=>s.mint).join(',');
 const BYMINT=Object.fromEntries(STABLES.map(s=>[s.mint,s.sym]));
+// ---- PER-COIN TUNING: USDe is the proven edge — deeper trigger, bigger allocation, scale-in ----
+// weight = max % of capital for this coin | buyBps = depeg depth to trigger | tranches = max scale-in buys
+const COIN_CFG={
+  USDe:  {weight:0.30, buyBps:20, tranches:3},  // proven wobbler: up to 30%, buy at 0.20%, scale in 3x
+  FDUSD: {weight:0.15, buyBps:20, tranches:2},
+  USD1:  {weight:0.15, buyBps:15, tranches:2},
+  USDT:  {weight:0.10, buyBps:15, tranches:1},
+  USDC:  {weight:0.10, buyBps:15, tranches:1},
+  PYUSD: {weight:0.10, buyBps:15, tranches:1},
+  USDS:  {weight:0.10, buyBps:15, tranches:1},
+  USDG:  {weight:0.10, buyBps:15, tranches:1},
+  AUSD:  {weight:0.10, buyBps:20, tranches:1},
+};
+const COIN_DEFAULT={weight:0.10, buyBps:15, tranches:1};
+const cfgFor=sym=>COIN_CFG[sym]||COIN_DEFAULT;
 
 // ---- Persistent trade log (survives restarts) ----
 const LEDGER_FILE=new URL('./trades.json',import.meta.url);
@@ -108,13 +123,30 @@ async function scan(){
     const edge=Math.abs(dev)-cost;
     const pos=positions.get(s.sym);
     // BUY cheap
-    if(!pos && dev<0 && Math.abs(dev)>=CFG.DEPEG_BPS && edge>0 && positions.size<CFG.MAX_POSITIONS){
-      const size=Math.min(S.portfolio.cash,S.portfolio.startCapital*CFG.POS_PCT);
+    const cc=cfgFor(s.sym);
+    const buyTrigger=cc.buyBps/10000;
+    // TRANCHE size = weight split across allowed tranches (so 3 tranches never exceed the coin's weight cap)
+    const trancheSize=(S.portfolio.startCapital*cc.weight)/cc.tranches;
+    // FIRST BUY: coin is cheap past its own trigger
+    if(!pos && dev<0 && Math.abs(dev)>=buyTrigger && edge>0 && positions.size<CFG.MAX_POSITIONS){
+      const size=Math.min(S.portfolio.cash,trancheSize);
       if(size>=10){
-        positions.set(s.sym,{side:'long',entry:price,sizeUSD:size,cost,openedAt:Date.now()});
+        positions.set(s.sym,{side:'long',entry:price,sizeUSD:size,cost,openedAt:Date.now(),tranches:1,maxTranches:cc.tranches,lastBuyPrice:price,weight:cc.weight});
         S.portfolio.cash-=size;S.portfolio.deployed+=size;S.stats.signals++;
         S.lastEvent={type:'BUY',sym:s.sym,at:Date.now()};
-        push(`BUY ${s.sym} @ ${price.toFixed(5)} | $${size.toFixed(2)} (${(CFG.POS_PCT*100)}%) | ${(dev*100).toFixed(3)}% cheap, edge +${(edge*100).toFixed(3)}% | target ${(1-CFG.SELL_BPS).toFixed(5)}`,'ok');
+        push(`BUY ${s.sym} @ ${price.toFixed(5)} | $${size.toFixed(2)} tranche 1/${cc.tranches} | ${(dev*100).toFixed(3)}% cheap, edge +${(edge*100).toFixed(3)}% | target ${(1-CFG.SELL_BPS).toFixed(5)}`,'ok');
+      }
+    }
+    // SCALE IN (double down): already holding, price dropped ANOTHER 0.10%+ below last buy, tranches remain
+    if(pos && pos.side==='long' && pos.tranches<pos.maxTranches && price <= pos.lastBuyPrice*(1-0.0010)){
+      const size=Math.min(S.portfolio.cash,trancheSize);
+      if(size>=10){
+        const newTotal=pos.sizeUSD+size;
+        const newEntry=(pos.entry*pos.sizeUSD+price*size)/newTotal; // weighted avg entry
+        pos.entry=newEntry;pos.sizeUSD=newTotal;pos.tranches++;pos.lastBuyPrice=price;
+        S.portfolio.cash-=size;S.portfolio.deployed+=size;
+        S.lastEvent={type:'BUY',sym:s.sym,at:Date.now()};
+        push(`SCALE-IN ${s.sym} @ ${price.toFixed(5)} | +$${size.toFixed(2)} tranche ${pos.tranches}/${pos.maxTranches} | avg entry now ${newEntry.toFixed(5)} | dropped deeper, doubling down`,'warn');
       }
     }
     // SHORT rich (paper-simulated; live needs inventory/borrow)
