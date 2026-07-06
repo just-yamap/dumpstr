@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>DUMPSTR · DEPEG DESK</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+:root{--void:#05090A;--panel:#0D171A;--rim:#16262B;--rim2:#1E3840;--amber:#FFB020;--green:#00E676;--cyan:#22E0FF;--red:#FF3B3B;--white:#DFF3F0;--mut:#4C6068;--glow:#00E67633;--disp:'Orbitron',sans-serif;--mono:'Share Tech Mono',monospace;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(ellipse at 50% -10%,#0C1A1E,#05090A 60%);color:var(--white);font-family:var(--mono);min-height:100vh;padding:14px}
+.deck{max-width:1340px;margin:0 auto}
+.glare{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#0E1D22,#081215);border:1px solid var(--rim2);border-radius:10px;padding:12px 20px;margin-bottom:14px}
+.glare h1{font-family:var(--disp);font-weight:900;font-size:22px;letter-spacing:.15em}.glare h1 b{color:var(--amber)}
+.glare .sub{font-size:10px;letter-spacing:.2em;color:var(--mut);margin-top:3px}
+.rt{display:flex;gap:10px;align-items:center}
+.snd{background:#081114;border:1px solid var(--rim);border-radius:6px;padding:6px 10px;font-size:11px;color:var(--cyan);cursor:pointer}
+.mode{font-family:var(--disp);font-weight:700;font-size:13px;padding:7px 16px;border-radius:6px;border:1px solid var(--green);color:var(--green);box-shadow:0 0 12px var(--glow)}
+.mode.dead{border-color:var(--mut);color:var(--mut);box-shadow:none}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:14px}
+.kpi{background:var(--panel);border:1px solid var(--rim);border-radius:10px;padding:14px}
+.kpi .v{font-family:var(--disp);font-weight:900;font-size:24px}.kpi .l{font-size:9px;color:var(--mut);letter-spacing:.1em;text-transform:uppercase;margin-top:5px}
+.g{color:var(--green)}.c{color:var(--cyan)}.a{color:var(--amber)}.r{color:var(--red)}
+.inst{background:linear-gradient(180deg,#0C181C,#081013);border:1px solid var(--rim);border-radius:10px;margin-bottom:14px}
+.inst h2{font-family:var(--disp);font-weight:700;font-size:12px;letter-spacing:.12em;color:var(--amber);padding:10px 14px;border-bottom:1px solid var(--rim);display:flex;justify-content:space-between}
+.body{padding:14px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:11px}
+.card{background:#081114;border:1px solid var(--rim);border-radius:9px;padding:12px;position:relative;transition:border-color .2s}
+.card.flash{animation:cardflash 1s ease-out}
+@keyframes cardflash{0%{box-shadow:0 0 30px var(--green);border-color:var(--green)}100%{box-shadow:none}}
+.badge{position:absolute;top:8px;right:8px;font-size:9px;padding:2px 6px;border-radius:4px;font-weight:700;color:var(--void)}
+.sym{font-family:var(--disp);font-weight:700;font-size:15px}
+.price{font-family:var(--disp);font-size:23px;font-weight:900;margin:5px 0}
+.rl{font-size:10px;color:var(--mut);display:flex;justify-content:space-between;padding:1px 0}
+.up{color:var(--green)}.dn{color:var(--red)}
+.bar{height:6px;background:#0A1518;border-radius:3px;margin:8px 0;position:relative}
+.bar .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--rim2)}
+.bar .fill{position:absolute;top:0;bottom:0;border-radius:3px}
+.pools{border-top:1px solid #0F1E22;padding-top:6px;margin-top:4px}
+.pl{font-size:9px;color:var(--mut);display:flex;justify-content:space-between}
+table{width:100%;border-collapse:collapse;font-size:11px}
+th{color:var(--mut);font-size:9px;letter-spacing:.1em;text-align:right;padding:6px 10px;border-bottom:1px solid var(--rim)}
+th:first-child,td:first-child{text-align:left}
+td{padding:6px 10px;text-align:right;border-bottom:1px solid #0F1E22;white-space:nowrap}
+#log{max-height:240px;overflow-y:auto;font-size:11px;line-height:1.7;color:var(--mut)}
+#log .t{color:#1FA37A}#log .warn{color:var(--amber)}#log .err{color:var(--red)}#log .ok{color:var(--green)}
+</style></head>
+<body><div class="deck">
+<div class="glare"><div><h1>DUMP<b>STR</b> · DEPEG DESK</h1><div class="sub" id="sub">CONNECTING…</div></div>
+<div class="rt"><button class="snd" id="sndBtn">🔊 SOUND ON</button><div class="mode dead" id="mode">OFFLINE</div></div></div>
+<div class="kpis">
+  <div class="kpi"><div class="v" id="kEquity">$0</div><div class="l">Portfolio Equity</div></div>
+  <div class="kpi"><div class="v g" id="kPnl">$0.00</div><div class="l">Realized PnL</div></div>
+  <div class="kpi"><div class="v c" id="kRoi">0.00%</div><div class="l">Total ROI</div></div>
+  <div class="kpi"><div class="v a" id="kOpen">0</div><div class="l">Open / Deployed</div></div>
+  <div class="kpi"><div class="v" id="kTrades">0</div><div class="l">Closed (W/L)</div></div>
+</div>
+<div class="inst"><h2>💠 STABLECOIN DEPEG BOARD <span class="c" id="boardStat">—</span></h2><div class="body"><div class="cards" id="cards"><div style="color:var(--mut);padding:20px">connecting to engine…</div></div></div></div>
+<div class="inst"><h2>💰 CLOSED TRADES <span class="c" id="tradeStat">none yet</span></h2><div class="body" style="padding:0"><table><thead><tr><th>Time</th><th>Coin</th><th>Entry</th><th>Exit</th><th>Size</th><th>PnL</th><th>ROI</th><th>Held</th></tr></thead><tbody id="trades"><tr><td colspan="8" style="text-align:center;color:var(--mut);padding:16px">waiting for first completed trade</td></tr></tbody></table></div></div>
+<div class="inst"><h2>OPEN POSITIONS <span class="c" id="posStat">flat</span></h2><div class="body" id="positions"><span style="color:var(--mut)">no open positions</span></div></div>
+<div class="inst"><h2>📋 LIVE ACTIVITY LOG</h2><div class="body" id="log"></div></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+let soundOn=true,lastEventTime=0,prevHolding={};
+$('sndBtn').onclick=()=>{soundOn=!soundOn;$('sndBtn').textContent=soundOn?'🔊 SOUND ON':'🔇 SOUND OFF';if(soundOn)beep(660,0.1);};
+let actx;
+function beep(freq,dur,type='sine'){if(!soundOn)return;try{actx=actx||new(window.AudioContext||window.webkitAudioContext)();const o=actx.createOscillator(),g=actx.createGain();o.connect(g);g.connect(actx.destination);o.type=type;o.frequency.value=freq;g.gain.setValueAtTime(.12,actx.currentTime);g.gain.exponentialRampToValueAtTime(.001,actx.currentTime+dur);o.start();o.stop(actx.currentTime+dur);}catch{}}
+function cashRegister(){if(!soundOn)return;beep(1320,0.08,'square');setTimeout(()=>beep(1760,0.15,'square'),90);setTimeout(()=>beep(2093,0.2,'sine'),200);}
+function buyBeep(){beep(880,0.1,'triangle');setTimeout(()=>beep(1180,0.12,'triangle'),100);}
+async function tick(){
+  try{
+    const s=await(await fetch('/state',{cache:'no-store'})).json();
+    $('mode').textContent='● PAPER';$('mode').className='mode';
+    $('sub').textContent=`PAPER · RPC ${s.rpc} · $${s.cfg.capital} capital · ${(s.cfg.posPct*100)}%/trade · max ${s.cfg.maxPos} · CYCLE ${s.cycle}`;
+    const pf=s.portfolio;
+    $('kEquity').textContent='$'+(pf.equity+pf.realizedPnl).toFixed(2);
+    $('kPnl').textContent=(pf.realizedPnl>=0?'+$':'-$')+Math.abs(pf.realizedPnl).toFixed(2);$('kPnl').className='v '+(pf.realizedPnl>=0?'g':'r');
+    $('kRoi').textContent=(pf.roi>=0?'+':'')+pf.roi.toFixed(3)+'%';$('kRoi').className='v '+(pf.roi>=0?'g':'r');
+    $('kOpen').textContent=s.positions.length+' / $'+pf.deployed.toFixed(0);
+    $('kTrades').textContent=`${s.stats.trades} (${s.stats.wins}W/${s.stats.losses}L)`;
+    if(s.lastEvent&&s.lastEvent.at>lastEventTime){lastEventTime=s.lastEvent.at;if(s.lastEvent.type==='BUY')buyBeep();if(s.lastEvent.type==='SELL')cashRegister();}
+    const alerts=s.stables.filter(x=>x.alert).length;
+    $('boardStat').textContent=`${s.stables.length} coins · ${alerts} live signal${alerts!==1?'s':''}`;
+    $('cards').innerHTML=s.stables.map(x=>{
+      if(x.bad)return `<div class="card" style="opacity:.4"><div class="sym">${x.sym}</div><div class="rl">bad route — guarded</div></div>`;
+      if(x.price==null)return `<div class="card" style="opacity:.5"><div class="sym">${x.sym}</div><div class="rl">no route</div></div>`;
+      const off=x.dev*100,edge=x.edge!=null?x.edge*100:null,cost=x.cost!=null?x.cost*100:null;
+      const hold=x.holding,hot=x.alert&&!hold;
+      const flash=(hold&&!prevHolding[x.sym])?'flash':'';prevHolding[x.sym]=hold;
+      const bc=hold?'var(--cyan)':(hot?'var(--green)':(Math.abs(off)>0.05?'var(--amber)':'var(--rim)'));
+      const glow=(hot||hold)?`box-shadow:0 0 16px ${hold?'#22E0FF44':'var(--glow)'};`:'';
+      const badge=hold?`<div class="badge" style="background:var(--cyan)">HOLDING</div>`:hot?`<div class="badge" style="background:var(--green)">BUY</div>`:'';
+      const pools=(s.poolMap&&s.poolMap[x.sym])||[];
+      return `<div class="card ${flash}" style="border-color:${bc};${glow}">${badge}
+        <div class="sym">${x.sym}</div>
+        <div class="price" style="color:${off<-0.05?'var(--amber)':off>0.05?'var(--cyan)':'var(--white)'}">${x.price.toFixed(5)}</div>
+        <div class="rl"><span>OFF PEG</span><b class="${off<0?'up':'dn'}">${off>=0?'+':''}${off.toFixed(3)}%</b></div>
+        <div class="rl"><span>RT COST</span><b>${cost!=null?cost.toFixed(3)+'%':'—'}</b></div>
+        <div class="rl"><span>EDGE</span><b class="${edge>0?'up':'dn'}">${edge!=null?(edge>=0?'+':'')+edge.toFixed(3)+'%':'—'}</b></div>
+        ${hold?`<div class="rl" style="color:var(--cyan)"><span>IN $${x.sizeUSD.toFixed(0)} @${x.entry.toFixed(5)}</span><b class="${x.unrealPnl>=0?'up':'dn'}">${x.unrealPnl>=0?'+':''}$${x.unrealPnl.toFixed(2)}</b></div>`:''}
+        <div class="bar"><div class="mid"></div><div class="fill" style="${off<0?'right':'left'}:50%;width:${Math.min(Math.abs(off)*35,50)}%;background:${hot?'var(--green)':off<0?'var(--amber)':'var(--cyan)'}"></div></div>
+        <div class="pools">${pools.length?pools.map(p=>`<div class="pl"><span>${p.name}</span><span>$${(p.liq/1000).toFixed(0)}k</span></div>`).join(''):'<div class="pl">…</div>'}</div>
+      </div>`;
+    }).join('');
+    $('tradeStat').textContent=s.trades.length?`${s.trades.length} shown`:'none yet';
+    $('trades').innerHTML=s.trades.length?s.trades.map(t=>`<tr><td>${t.t}</td><td class="c">${t.sym}</td><td>${t.entry.toFixed(5)}</td><td>${t.exit.toFixed(5)}</td><td>$${t.sizeUSD.toFixed(0)}</td><td class="${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</td><td class="${t.roi>=0?'up':'dn'}">${t.roi>=0?'+':''}${t.roi.toFixed(3)}%</td><td>${t.held}s</td></tr>`).join(''):'<tr><td colspan="8" style="text-align:center;color:var(--mut);padding:16px">waiting for first completed trade</td></tr>';
+    const pos=s.positions||[];
+    $('posStat').textContent=pos.length?`${pos.length} open · $${pf.deployed.toFixed(0)} deployed`:'flat';
+    $('positions').innerHTML=pos.length?pos.map(p=>`<div class="rl" style="font-size:12px;padding:5px 0"><span class="c">${p.side.toUpperCase()} ${p.sym} · $${p.sizeUSD.toFixed(0)}</span><span>entry ${p.entry.toFixed(5)} · ${p.age}s ago</span></div>`).join(''):'<span style="color:var(--mut)">no open positions — waiting for depeg</span>';
+    $('log').innerHTML=s.log.map(l=>`<div><span class="t">${l.t}</span> <span class="${l.cls}">${l.m}</span></div>`).join('');
+  }catch(e){$('mode').textContent='OFFLINE';$('mode').className='mode dead';$('sub').textContent='start engine.mjs in terminal, then refresh';}
+}
+setInterval(tick,1500);tick();
+</script></body></html>
