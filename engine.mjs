@@ -30,6 +30,7 @@ const STABLES=[
   {sym:'USDe',mint:'DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT'},
   {sym:'AUSD',mint:'AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9'},
   {sym:'USDG',mint:'2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH'},
+  {sym:'USD1',mint:'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB'},
 ];
 const MINTS=STABLES.map(s=>s.mint).join(',');
 const BYMINT=Object.fromEntries(STABLES.map(s=>[s.mint,s.sym]));
