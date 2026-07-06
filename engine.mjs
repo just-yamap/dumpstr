@@ -32,6 +32,8 @@ const STABLES=[
   {sym:'USDG',mint:'2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH'},
   {sym:'USD1',mint:'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB'},
 ];
+// Which coins can actually be BORROWED to short (Solana lending markets). Small-caps can't be.
+const BORROWABLE={USDC:true,USDT:true,USDe:true,PYUSD:true,USDS:true,FDUSD:false,AUSD:false,USDG:false,USD1:false};
 const MINTS=STABLES.map(s=>s.mint).join(',');
 const BYMINT=Object.fromEntries(STABLES.map(s=>[s.mint,s.sym]));
 
@@ -113,13 +115,14 @@ async function scan(){
       }
     }
     // SHORT rich (paper-simulated; live needs inventory/borrow)
-    if(!pos && CFG.SHORT && dev>0 && Math.abs(dev)>=CFG.DEPEG_BPS && edge>0 && positions.size<CFG.MAX_POSITIONS){
+    if(!pos && CFG.SHORT && (BORROWABLE[s.sym]||false) && dev>0 && Math.abs(dev)>=CFG.DEPEG_BPS && edge>0 && positions.size<CFG.MAX_POSITIONS){
       const size=Math.min(S.portfolio.cash,S.portfolio.startCapital*CFG.POS_PCT);
       if(size>=10){
-        positions.set(s.sym,{side:'short',entry:price,sizeUSD:size,cost,openedAt:Date.now()});
+        const borrowable=BORROWABLE[s.sym]||false;
+        positions.set(s.sym,{side:'short',entry:price,sizeUSD:size,cost,openedAt:Date.now(),borrowable});
         S.portfolio.cash-=size;S.portfolio.deployed+=size;S.stats.signals++;
         S.lastEvent={type:'BUY',sym:s.sym,at:Date.now()};
-        push(`SHORT ${s.sym} @ ${price.toFixed(5)} | $${size.toFixed(2)} | ${(dev*100).toFixed(3)}% rich, edge +${(edge*100).toFixed(3)}% | target ${(1+CFG.SELL_BPS).toFixed(5)} [paper-sim, live needs inventory]`,'warn');
+        push(`SHORT ${s.sym} @ ${price.toFixed(5)} | $${size.toFixed(2)} | ${(dev*100).toFixed(3)}% rich, edge +${(edge*100).toFixed(3)}% | ${borrowable?'EXECUTABLE (borrowable)':'SIM-ONLY (cannot borrow this coin)'}`,borrowable?'warn':'err');
       }
     }
     // COVER short at repeg (price fell back to peg)
@@ -129,7 +132,7 @@ async function scan(){
       S.portfolio.cash+=pos.sizeUSD+pnl;S.portfolio.deployed-=pos.sizeUSD;S.portfolio.realizedPnl+=pnl;
       S.stats.trades++;pnl>=0?S.stats.wins++:S.stats.losses++;
       const held=((Date.now()-pos.openedAt)/1000).toFixed(0);
-      const trade={sym:s.sym,entry:pos.entry,exit:price,sizeUSD:pos.sizeUSD,pnl,roi,held,t:ts(),date:new Date().toISOString(),side:'short'};
+      const trade={sym:s.sym,entry:pos.entry,exit:price,sizeUSD:pos.sizeUSD,pnl,roi,held,t:ts(),date:new Date().toISOString(),side:'short',executable:pos.borrowable||false};
       S.trades.unshift(trade);S.trades=S.trades.slice(0,40);
       ledger.trades.unshift(trade);ledger.realizedPnl=S.portfolio.realizedPnl;ledger.wins=S.stats.wins;ledger.losses=S.stats.losses;saveTrades(ledger);
       S.lastEvent={type:'SELL',sym:s.sym,pnl,at:Date.now()};
@@ -157,12 +160,12 @@ async function scan(){
     const cexSpread=cexPrice?(price-cexPrice):null; // DEX price minus CEX price
     out.push({sym:s.sym,price,dev,cost,edge,alert:Math.abs(dev)>=CFG.DEPEG_BPS&&edge>0&&(dev<0||(CFG.SHORT&&dev>0)),rich:dev>0,
       cexPrice,cexSpread,cexVenue:cx.coinbase?'CB':cx.kraken?'KR':null,
-      holding:!!p,entry:p?.entry,sizeUSD:p?.sizeUSD,unrealPnl:p?(price-p.entry)*p.sizeUSD:null});
+      holding:!!p,entry:p?.entry,sizeUSD:p?.sizeUSD,unrealPnl:p?((p.side==='short'?(p.entry-price):(price-p.entry))*p.sizeUSD):null});
   }
   S.stables=out;
   S.portfolio.equity=S.portfolio.cash+S.portfolio.deployed;
   S.portfolio.roi=((S.portfolio.equity+S.portfolio.realizedPnl-S.portfolio.startCapital)/S.portfolio.startCapital)*100;
-  S.positions=[...positions.entries()].map(([sym,p])=>{const cur=S.lastPrices[sym]||p.entry;return{sym,side:p.side,entry:p.entry,sizeUSD:p.sizeUSD,cur,target:1-CFG.SELL_BPS,age:Math.round((Date.now()-p.openedAt)/1000),unrealPnl:(cur-p.entry)*p.sizeUSD};});
+  S.positions=[...positions.entries()].map(([sym,p])=>{const cur=S.lastPrices[sym]||p.entry;const upnl=(p.side==='short'?(p.entry-cur):(cur-p.entry))*p.sizeUSD;return{sym,side:p.side,entry:p.entry,sizeUSD:p.sizeUSD,cur,target:p.side==='short'?1+CFG.SELL_BPS:1-CFG.SELL_BPS,age:Math.round((Date.now()-p.openedAt)/1000),unrealPnl:upnl};});
   // equity curve: total equity incl unrealized, sampled
   const unreal=S.positions.reduce((a,p)=>a+p.unrealPnl,0);
   const totalEquity=S.portfolio.cash+S.portfolio.deployed+S.portfolio.realizedPnl+unreal;
