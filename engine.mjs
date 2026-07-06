@@ -50,10 +50,13 @@ const S={
   portfolio:{cash:CFG.START_USD,deployed:0,equity:CFG.START_USD,realizedPnl:ledger.realizedPnl||0,startCapital:CFG.START_USD,roi:0},
   stables:[],positions:[],poolMap:{},trades:ledger.trades.slice(0,40),log:[],cex:{},gecko:[],
   stats:{signals:0,trades:ledger.trades.length,wins:ledger.wins||0,losses:ledger.losses||0,rateLimitHits:0,sinceInception:ledger.sinceInception},
-  lastEvent:null,lastPrices:{},equityHistory:[],
+  lastEvent:null,lastPrices:{},equityHistory:[],priceHistory:{},
 };
 const ts=()=>new Date().toISOString().slice(11,19);
 const LOG_FILE=new URL('./engine.log',import.meta.url);
+const PRICE_CSV=new URL('./prices.csv',import.meta.url);
+// write CSV header once if file doesn't exist
+try{if(!fs.existsSync(PRICE_CSV))fs.writeFileSync(PRICE_CSV,'timestamp,'+STABLES.map(s=>s.sym).join(',')+'\n');}catch{}
 const push=(m,cls='')=>{S.log.unshift({t:ts(),m,cls});S.log=S.log.slice(0,150);const line=`[${new Date().toISOString()}] ${m}`;console.log(line);try{fs.appendFileSync(LOG_FILE,line+'\n');}catch{}};
 
 async function jfetch(url,opts={},tries=3){for(let i=0;i<tries;i++){try{const r=await fetch(url,{...opts,headers:{...jupHeaders,...(opts.headers||{})},signal:AbortSignal.timeout(12000)});if(r.status===429){S.stats.rateLimitHits++;await sleep(3000*(i+1));continue;}if(r.ok)return await r.json();}catch{}await sleep(600*(i+1));}return null;}
@@ -167,6 +170,9 @@ async function scan(){
   S.portfolio.roi=((S.portfolio.equity+S.portfolio.realizedPnl-S.portfolio.startCapital)/S.portfolio.startCapital)*100;
   S.positions=[...positions.entries()].map(([sym,p])=>{const cur=S.lastPrices[sym]||p.entry;const upnl=(p.side==='short'?(p.entry-cur):(cur-p.entry))*p.sizeUSD;return{sym,side:p.side,entry:p.entry,sizeUSD:p.sizeUSD,cur,target:p.side==='short'?1+CFG.SELL_BPS:1-CFG.SELL_BPS,age:Math.round((Date.now()-p.openedAt)/1000),unrealPnl:upnl};});
   // equity curve: total equity incl unrealized, sampled
+  // log all prices this cycle to CSV for full historical charting
+  try{const row=new Date().toISOString()+','+STABLES.map(st=>{const c=out.find(o=>o.sym===st.sym);return c&&c.price?c.price.toFixed(5):'';}).join(',');fs.appendFileSync(PRICE_CSV,row+'\n');}catch{}
+  for(const o of out){if(o.price){if(!S.priceHistory[o.sym])S.priceHistory[o.sym]=[];S.priceHistory[o.sym].push({t:Date.now(),p:o.price});if(S.priceHistory[o.sym].length>500)S.priceHistory[o.sym]=S.priceHistory[o.sym].slice(-500);}}
   const unreal=S.positions.reduce((a,p)=>a+p.unrealPnl,0);
   const totalEquity=S.portfolio.cash+S.portfolio.deployed+S.portfolio.realizedPnl+unreal;
   S.equityHistory.push({t:Date.now(),eq:Number(totalEquity.toFixed(2))});
