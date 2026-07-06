@@ -52,10 +52,12 @@ td{padding:6px 10px;text-align:right;border-bottom:1px solid #0F1E22;white-space
   <div class="kpi"><div class="v a" id="kOpen">0</div><div class="l">Open / Deployed</div></div>
   <div class="kpi"><div class="v" id="kTrades">0</div><div class="l">Closed (W/L)</div></div>
 </div>
+<div class="inst"><h2>📈 EQUITY CURVE <span class="c" id="chartStat">portfolio value over time</span></h2><div class="body"><canvas id="equityChart" style="width:100%;height:180px"></canvas></div></div>
 <div class="inst"><h2>💠 STABLECOIN DEPEG BOARD <span class="c" id="boardStat">—</span></h2><div class="body"><div class="cards" id="cards"><div style="color:var(--mut);padding:20px">connecting to engine…</div></div></div></div>
+<div class="inst"><h2>🌍 MARKET-WIDE STABLECOIN FEED <span class="c" id="geckoStat">CoinGecko · top 14 by mcap</span></h2><div class="body"><div id="gecko" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px"></div></div></div>
 <div class="inst"><h2>💰 CLOSED TRADES <span class="c" id="tradeStat">none yet</span></h2><div class="body" style="padding:0"><table><thead><tr><th>Time</th><th>Coin</th><th>Entry</th><th>Exit</th><th>Size</th><th>PnL</th><th>ROI</th><th>Held</th></tr></thead><tbody id="trades"><tr><td colspan="8" style="text-align:center;color:var(--mut);padding:16px">waiting for first completed trade</td></tr></tbody></table></div></div>
 <div class="inst"><h2>OPEN POSITIONS <span class="c" id="posStat">flat</span></h2><div class="body" id="positions"><span style="color:var(--mut)">no open positions</span></div></div>
-<div class="inst"><h2>📋 LIVE ACTIVITY LOG</h2><div class="body" id="log"></div></div>
+<div class="inst"><h2>📋 EVENT LOG <span class="c" id="evtStat">live</span></h2><div class="body" id="log"></div></div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -69,7 +71,7 @@ async function tick(){
   try{
     const s=await(await fetch('/state',{cache:'no-store'})).json();
     $('mode').textContent='● PAPER';$('mode').className='mode';
-    $('sub').textContent=`PAPER · RPC ${s.rpc} · $${s.cfg.capital} capital · ${(s.cfg.posPct*100)}%/trade · max ${s.cfg.maxPos} · CYCLE ${s.cycle}`;
+    $('sub').textContent=`PAPER · RPC ${s.rpc} · Jupiter ${s.jup} · $${s.cfg.capital} · ${(s.cfg.posPct*100)}%/trade · CYCLE ${s.cycle}`;
     const pf=s.portfolio;
     $('kEquity').textContent='$'+(pf.equity+pf.realizedPnl).toFixed(2);
     $('kPnl').textContent=(pf.realizedPnl>=0?'+$':'-$')+Math.abs(pf.realizedPnl).toFixed(2);$('kPnl').className='v '+(pf.realizedPnl>=0?'g':'r');
@@ -77,6 +79,29 @@ async function tick(){
     $('kOpen').textContent=s.positions.length+' / $'+pf.deployed.toFixed(0);
     $('kTrades').textContent=`${s.stats.trades} (${s.stats.wins}W/${s.stats.losses}L)`;
     if(s.lastEvent&&s.lastEvent.at>lastEventTime){lastEventTime=s.lastEvent.at;if(s.lastEvent.type==='BUY')buyBeep();if(s.lastEvent.type==='SELL')cashRegister();}
+    // equity curve chart
+    if(s.equityHistory&&s.equityHistory.length>1){
+      const cv=$('equityChart');const ctx=cv.getContext('2d');
+      const w=cv.width=cv.offsetWidth*2,h=cv.height=360;
+      const data=s.equityHistory;const start=s.portfolio.startCapital;
+      const eqs=data.map(d=>d.eq);const min=Math.min(...eqs,start),max=Math.max(...eqs,start);
+      const range=(max-min)||1;const pad=40;
+      ctx.clearRect(0,0,w,h);
+      const baseY=h-pad-((start-min)/range)*(h-2*pad);
+      ctx.strokeStyle='#1E3840';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+      ctx.beginPath();ctx.moveTo(pad,baseY);ctx.lineTo(w-pad,baseY);ctx.stroke();ctx.setLineDash([]);
+      ctx.fillStyle='#4C6068';ctx.font='18px monospace';ctx.fillText('$'+start,4,baseY-4);
+      const last=eqs[eqs.length-1];const up=last>=start;
+      ctx.strokeStyle=up?'#00E676':'#FF3B3B';ctx.lineWidth=2.5;ctx.beginPath();
+      data.forEach((d,i)=>{const x=pad+(i/(data.length-1))*(w-2*pad);const y=h-pad-((d.eq-min)/range)*(h-2*pad);i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+      ctx.stroke();
+      ctx.lineTo(w-pad,h-pad);ctx.lineTo(pad,h-pad);ctx.closePath();
+      ctx.fillStyle=up?'rgba(0,230,118,0.08)':'rgba(255,59,59,0.08)';ctx.fill();
+      ctx.fillStyle=up?'#00E676':'#FF3B3B';ctx.font='bold 22px monospace';
+      ctx.fillText('$'+last.toFixed(2),w-pad-160,30);
+      $('chartStat').textContent=`${data.length} samples · ${up?'+':''}$${(last-start).toFixed(2)}`;
+    }
+    // cards
     const alerts=s.stables.filter(x=>x.alert).length;
     $('boardStat').textContent=`${s.stables.length} coins · ${alerts} live signal${alerts!==1?'s':''}`;
     $('cards').innerHTML=s.stables.map(x=>{
@@ -95,16 +120,33 @@ async function tick(){
         <div class="rl"><span>OFF PEG</span><b class="${off<0?'up':'dn'}">${off>=0?'+':''}${off.toFixed(3)}%</b></div>
         <div class="rl"><span>RT COST</span><b>${cost!=null?cost.toFixed(3)+'%':'—'}</b></div>
         <div class="rl"><span>EDGE</span><b class="${edge>0?'up':'dn'}">${edge!=null?(edge>=0?'+':'')+edge.toFixed(3)+'%':'—'}</b></div>
+        ${x.cexPrice?`<div class="rl" style="border-top:1px solid #0F1E22;margin-top:4px;padding-top:4px"><span>CEX ${x.cexVenue||''}</span><b>${x.cexPrice.toFixed(5)}</b></div><div class="rl"><span>DEX-CEX GAP</span><b class="${Math.abs(x.cexSpread)>0.002?'up':''}">${x.cexSpread>=0?'+':''}${(x.cexSpread*100).toFixed(3)}%</b></div>`:''}
         ${hold?`<div class="rl" style="color:var(--cyan)"><span>IN $${x.sizeUSD.toFixed(0)} @${x.entry.toFixed(5)}</span><b class="${x.unrealPnl>=0?'up':'dn'}">${x.unrealPnl>=0?'+':''}$${x.unrealPnl.toFixed(2)}</b></div>`:''}
         <div class="bar"><div class="mid"></div><div class="fill" style="${off<0?'right':'left'}:50%;width:${Math.min(Math.abs(off)*35,50)}%;background:${hot?'var(--green)':off<0?'var(--amber)':'var(--cyan)'}"></div></div>
         <div class="pools">${pools.length?pools.map(p=>`<div class="pl"><span>${p.name}</span><span>$${(p.liq/1000).toFixed(0)}k</span></div>`).join(''):'<div class="pl">…</div>'}</div>
       </div>`;
     }).join('');
+    // CoinGecko market-wide feed
+    if(s.gecko&&s.gecko.length){
+      const ourSyms=s.stables.map(x=>x.sym);
+      $('gecko').innerHTML=s.gecko.map(g=>{
+        const off=g.dev*100;
+        const tracked=ourSyms.includes(g.sym);
+        const deep=Math.abs(off)>0.2;
+        return `<div style="background:#081114;border:1px solid ${deep?'var(--amber)':'var(--rim)'};border-radius:7px;padding:8px">
+          <div style="display:flex;justify-content:space-between"><b style="font-size:12px">${g.sym}</b>${tracked?'<span style="font-size:8px;color:var(--cyan)">TRADING</span>':'<span style="font-size:8px;color:var(--mut)">watch</span>'}</div>
+          <div style="font-family:var(--disp);font-size:14px;margin:2px 0">${g.price.toFixed(4)}</div>
+          <div style="font-size:9px" class="${off<0?'up':'dn'}">${off>=0?'+':''}${off.toFixed(3)}% · $${(g.mcap/1e6).toFixed(0)}M</div>
+        </div>`;
+      }).join('');
+    }
+    // trades
     $('tradeStat').textContent=s.trades.length?`${s.trades.length} shown`:'none yet';
     $('trades').innerHTML=s.trades.length?s.trades.map(t=>`<tr><td>${t.t}</td><td class="c">${t.sym}</td><td>${t.entry.toFixed(5)}</td><td>${t.exit.toFixed(5)}</td><td>$${t.sizeUSD.toFixed(0)}</td><td class="${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</td><td class="${t.roi>=0?'up':'dn'}">${t.roi>=0?'+':''}${t.roi.toFixed(3)}%</td><td>${t.held}s</td></tr>`).join(''):'<tr><td colspan="8" style="text-align:center;color:var(--mut);padding:16px">waiting for first completed trade</td></tr>';
+    // positions
     const pos=s.positions||[];
     $('posStat').textContent=pos.length?`${pos.length} open · $${pf.deployed.toFixed(0)} deployed`:'flat';
-    $('positions').innerHTML=pos.length?pos.map(p=>`<div class="rl" style="font-size:12px;padding:5px 0"><span class="c">${p.side.toUpperCase()} ${p.sym} · $${p.sizeUSD.toFixed(0)}</span><span>entry ${p.entry.toFixed(5)} · ${p.age}s ago</span></div>`).join(''):'<span style="color:var(--mut)">no open positions — waiting for depeg</span>';
+    $('positions').innerHTML=pos.length?pos.map(p=>`<div class="rl" style="font-size:12px;padding:5px 0"><span class="c">${p.side.toUpperCase()} ${p.sym} · $${p.sizeUSD.toFixed(0)}</span><span>entry ${p.entry.toFixed(5)} · now ${(p.cur||p.entry).toFixed(5)} · P&L ${p.unrealPnl>=0?'+':''}$${p.unrealPnl.toFixed(2)} · ${p.age}s</span></div>`).join(''):'<span style="color:var(--mut)">no open positions — waiting for depeg</span>';
     $('log').innerHTML=s.log.map(l=>`<div><span class="t">${l.t}</span> <span class="${l.cls}">${l.m}</span></div>`).join('');
   }catch(e){$('mode').textContent='OFFLINE';$('mode').className='mode dead';$('sub').textContent='start engine.mjs in terminal, then refresh';}
 }
