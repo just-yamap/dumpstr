@@ -83,7 +83,11 @@ try{if(!fs.existsSync(PRICE_CSV))fs.writeFileSync(PRICE_CSV,'timestamp,'+STABLES
 const APY_CSV=new URL('./apy-timeline.csv',import.meta.url);
 const COMP_CSV=new URL('./competitors-timeline.csv',import.meta.url);
 try{if(!fs.existsSync(COMP_CSV))fs.writeFileSync(COMP_CSV,'timestamp,name:tvl_pairs_semicolon_separated\n');}catch{}
-try{if(!fs.existsSync(APY_CSV))fs.writeFileSync(APY_CSV,'timestamp,nUSD_depositor_APY,best_lending_APY,depeg_APY\n');}catch{}
+try{if(!fs.existsSync(APY_CSV))fs.writeFileSync(APY_CSV,'timestamp,nUSD_depositor_APY,best_lending_APY,depeg_APY,delta_neutral_APY,blended_gross\n');}catch{}
+const DESKS_CSV=new URL('./desks-timeline.csv',import.meta.url);
+try{if(!fs.existsSync(DESKS_CSV))fs.writeFileSync(DESKS_CSV,'timestamp,depeg_equity,deltaNeutral_equity,lending_equity,lstBasis_equity\n');}catch{}
+const INPUTS_CSV=new URL('./strategy-inputs.csv',import.meta.url);
+try{if(!fs.existsSync(INPUTS_CSV))fs.writeFileSync(INPUTS_CSV,'timestamp,funding_BTC_apy,funding_ETH_apy,funding_SOL_apy,funding_avg_apy,funding_negative,jitoSOL_staking_apy,best_lending_apy,best_lending_pool\n');}catch{}
 const push=(m,cls='')=>{S.log.unshift({t:ts(),m,cls});S.log=S.log.slice(0,150);const line=`[${new Date().toISOString()}] ${m}`;console.log(line);try{fs.appendFileSync(LOG_FILE,line+'\n');}catch{}};
 
 async function jfetch(url,opts={},tries=3){for(let i=0;i<tries;i++){try{const r=await fetch(url,{...opts,headers:{...jupHeaders,...(opts.headers||{})},signal:AbortSignal.timeout(12000)});if(r.status===429){S.stats.rateLimitHits++;await sleep(3000*(i+1));continue;}if(r.ok)return await r.json();}catch{}await sleep(600*(i+1));}return null;}
@@ -139,12 +143,18 @@ function updateDesks(){
     lend.equity*=(1+(lend.curAPY/100)*(hrsElapsed/8760)); // APY -> hourly
   }
   lend.lastUpdate=now;
-  // record history for all three (cap 500)
-  for(const k of ['depeg','deltaNeutral','lending']){
-    const d=S.desks[k];
+  // LST-BASIS: jitoSOL staking yield minus ~1% hedge cost, market-neutral
+  const lst=S.desks.lstBasis;
+  if(lst&&lst.stakingAPY!=null){const hrsElapsed=(now-lst.lastUpdate)/3600000;const netAPY=lst.stakingAPY-1.0;lst.equity*=(1+(netAPY/100)*(hrsElapsed/8760));}
+  if(lst)lst.lastUpdate=now;
+  // record history for all four (cap 500)
+  for(const k of ['depeg','deltaNeutral','lending','lstBasis']){
+    const d=S.desks[k];if(!d)continue;
     d.history.push({t:now,eq:Number(d.equity.toFixed(2))});
     if(d.history.length>500)d.history=d.history.slice(-500);
   }
+  // PERSIST desk equities to disk (survives restart, full audit trail)
+  try{fs.appendFileSync(DESKS_CSV,`${new Date().toISOString()},${S.desks.depeg.equity.toFixed(2)},${S.desks.deltaNeutral.equity.toFixed(2)},${S.desks.lending.equity.toFixed(2)},${(S.desks.lstBasis?S.desks.lstBasis.equity:50000).toFixed(2)}\n`);}catch{}
 }
 
 // ---- CURATED VAULT COMPETITORS: delta-neutral / managed vaults = nUSD's direct rivals ----
@@ -407,12 +417,23 @@ http.createServer((req,res)=>{
 
 push(`DUMPSTR DEPEG ENGINE v3 · PAPER · $${CFG.START_USD} · Jupiter ${S.jup} · ${STABLES.length} coins/call · buy@${(CFG.DEPEG_BPS*100).toFixed(2)}% sell@${(CFG.SELL_BPS*100).toFixed(2)}%`);
 push(`lifetime: ${ledger.trades.length} trades · $${(ledger.realizedPnl||0).toFixed(2)} realized since ${ledger.sinceInception?.slice(0,10)}`,'ok');
+// RESTORE desk equities from disk so the four-desk experiment survives restarts
+try{if(fs.existsSync(DESKS_CSV)){const lines=fs.readFileSync(DESKS_CSV,'utf8').trim().split('\n');if(lines.length>1){const last=lines[lines.length-1].split(',');
+  if(last.length>=5){S.desks.depeg.equity=Number(last[1])||50000;S.desks.deltaNeutral.equity=Number(last[2])||50000;S.desks.lending.equity=Number(last[3])||50000;S.desks.lstBasis.equity=Number(last[4])||50000;
+  push(`restored desks from disk: depeg $${S.desks.depeg.equity.toFixed(2)} · DN $${S.desks.deltaNeutral.equity.toFixed(2)} · lend $${S.desks.lending.equity.toFixed(2)} · lst $${S.desks.lstBasis.equity.toFixed(2)}`,'ok');}}}}catch{}
 await refreshPools();let lastPools=Date.now();
 while(true){
   S.cycle++;
   await scan();
   if(S.cycle%6===1){try{S.cex=await fetchCEX();}catch{} try{S.gecko=await fetchGecko();}catch{}}
-  if(S.cycle%6===3){const f=await fetchFunding();if(f!=null)S.desks.deltaNeutral.fundingRate=f;}
+  if(S.cycle%6===3){const f=await fetchFunding();if(f!=null){S.desks.deltaNeutral.fundingRate=f;
+    // LOG raw strategy inputs for full APY reconstruction/audit
+    try{const pa=S.desks.deltaNeutral.perAsset||{};const toApy=x=>x!=null?(x*24*365*100).toFixed(2):'';
+      const favg=f*24*365*100;const neg=f<0?'1':'0';
+      const jito=S.desks.lstBasis.stakingAPY!=null?S.desks.lstBasis.stakingAPY.toFixed(2):'';
+      const bl=S.lendingAgg?S.lendingAgg.best.toFixed(2):'';const blp=(S.lending&&S.lending[0])?S.lending[0].project+'/'+S.lending[0].symbol:'';
+      fs.appendFileSync(INPUTS_CSV,`${new Date().toISOString()},${toApy(pa.BTC)},${toApy(pa.ETH)},${toApy(pa.SOL)},${favg.toFixed(2)},${neg},${jito},${bl},${blp}\n`);}catch{}
+  }}
   if(S.cycle%12===5){const ls=await fetchLST();if(ls!=null)S.desks.lstBasis.stakingAPY=ls;}
   updateDesks();
   if(S.cycle%24===2){try{S.competitors=await fetchCompetitors();}catch{} try{S.kaminoVaults=await fetchKaminoVaults();}catch{} try{S.curatedVaults=await fetchCurated();
@@ -421,7 +442,7 @@ while(true){
     fs.appendFileSync(new URL('./competitors-timeline.csv',import.meta.url),row+'\n');}catch{}}
   if(S.cycle%12===1){try{S.lending=await fetchLending();S.lendingAgg=lendingAggregate();
     if(S.lendingAgg)S.desks.lending.curAPY=S.lendingAgg.best;const b=blendedNusdAPY();S.blended=b;if(b){S.apyLog.push({t:Date.now(),depositorAPY:Number(b.depositorAPY.toFixed(2)),lendAPY:Number(b.bestLendAPY.toFixed(2)),depegAPY:Number(b.depegAPY.toFixed(2))});if(S.apyLog.length>500)S.apyLog=S.apyLog.slice(-500);
-    try{fs.appendFileSync(new URL('./apy-timeline.csv',import.meta.url),new Date().toISOString()+','+b.depositorAPY.toFixed(2)+','+b.bestLendAPY.toFixed(2)+','+b.depegAPY.toFixed(2)+'\n');}catch{}}}catch{}}
+    try{fs.appendFileSync(APY_CSV,new Date().toISOString()+','+b.depositorAPY.toFixed(2)+','+b.bestLendAPY.toFixed(2)+','+b.depegAPY.toFixed(2)+','+(b.dnAPY||0).toFixed(2)+','+b.blendedGross.toFixed(2)+'\n');}catch{}}}catch{}}
   push(`cycle ${S.cycle}: equity $${S.portfolio.equity.toFixed(2)} · realized $${S.portfolio.realizedPnl.toFixed(2)} · ROI ${S.portfolio.roi.toFixed(3)}% · ${S.positions.length} open · ${S.stats.trades} lifetime · 429s:${S.stats.rateLimitHits}`);
   if(Date.now()-lastPools>3*60000){await refreshPools();lastPools=Date.now();}
   await sleep(CFG.CYCLE_MS);
