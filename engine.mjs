@@ -73,6 +73,12 @@ const S={
     lending:{name:'Lending Aggregator',equity:50000,start:50000,history:[],lastUpdate:Date.now(),curAPY:null},
     lstBasis:{name:'LST-Basis',equity:50000,start:50000,history:[],lastUpdate:Date.now(),stakingAPY:null},
   },
+  // AGGREGATED VAULT: single pool, allocation rebalances 10% toward best desk every 24h
+  vault:{
+    balance:50000,start:50000,history:[],apyHistory:[],
+    alloc:{depeg:0.25,deltaNeutral:0.25,lending:0.25,lstBasis:0.25}, // starts equal
+    allocHistory:[],lastRebalance:Date.now(),rebalanceCount:0,lastUpdate:Date.now(),
+  },
 
 };
 const ts=()=>new Date().toISOString().slice(11,19);
@@ -87,6 +93,10 @@ try{if(!fs.existsSync(APY_CSV))fs.writeFileSync(APY_CSV,'timestamp,nUSD_deposito
 const DESKS_CSV=new URL('./desks-timeline.csv',import.meta.url);
 try{if(!fs.existsSync(DESKS_CSV))fs.writeFileSync(DESKS_CSV,'timestamp,depeg_equity,deltaNeutral_equity,lending_equity,lstBasis_equity\n');}catch{}
 const INPUTS_CSV=new URL('./strategy-inputs.csv',import.meta.url);
+const PAYOUTS_CSV=new URL('./payouts-timeline.csv',import.meta.url);
+try{if(!fs.existsSync(PAYOUTS_CSV))fs.writeFileSync(PAYOUTS_CSV,'timestamp,desk,payout_usd,cumulative_pnl,source_rate\n');}catch{}
+const VAULT_CSV=new URL('./vault-timeline.csv',import.meta.url);
+try{if(!fs.existsSync(VAULT_CSV))fs.writeFileSync(VAULT_CSV,'timestamp,vault_balance,vault_apy,alloc_depeg,alloc_deltaNeutral,alloc_lending,alloc_lstBasis,rebalance_count\n');}catch{}
 try{if(!fs.existsSync(INPUTS_CSV))fs.writeFileSync(INPUTS_CSV,'timestamp,funding_BTC_apy,funding_ETH_apy,funding_SOL_apy,funding_avg_apy,funding_negative,jitoSOL_staking_apy,best_lending_apy,best_lending_pool\n');}catch{}
 const push=(m,cls='')=>{S.log.unshift({t:ts(),m,cls});S.log=S.log.slice(0,150);const line=`[${new Date().toISOString()}] ${m}`;console.log(line);try{fs.appendFileSync(LOG_FILE,line+'\n');}catch{}};
 
@@ -155,6 +165,58 @@ function updateDesks(){
   }
   // PERSIST desk equities to disk (survives restart, full audit trail)
   try{fs.appendFileSync(DESKS_CSV,`${new Date().toISOString()},${S.desks.depeg.equity.toFixed(2)},${S.desks.deltaNeutral.equity.toFixed(2)},${S.desks.lending.equity.toFixed(2)},${(S.desks.lstBasis?S.desks.lstBasis.equity:50000).toFixed(2)}\n`);}catch{}
+  // LOG PAYOUTS: the incremental $ each desk earned this cycle (how much, when, from what rate)
+  try{const iso=new Date().toISOString();
+    for(const k of ['depeg','deltaNeutral','lending','lstBasis']){
+      const d=S.desks[k];if(!d)continue;
+      if(d.lastLoggedEquity==null){d.lastLoggedEquity=d.equity;continue;}
+      const payout=d.equity-d.lastLoggedEquity;
+      if(Math.abs(payout)>0.0001){
+        const rate=k==='deltaNeutral'&&d.fundingRate!=null?(d.fundingRate*24*365*100).toFixed(2)+'%funding':(k==='lending'&&d.curAPY!=null?d.curAPY.toFixed(2)+'%lend':(k==='lstBasis'&&d.stakingAPY!=null?(d.stakingAPY-1).toFixed(2)+'%netstake':(k==='depeg'?'USDe-trade':'')));
+        fs.appendFileSync(PAYOUTS_CSV,`${iso},${d.name},${payout.toFixed(4)},${(d.equity-d.start).toFixed(4)},${rate}\n`);
+        d.lastLoggedEquity=d.equity;
+      }
+    }
+  }catch{}
+}
+
+// ---- AGGREGATED VAULT: single pool, dynamic allocation, 24h momentum rebalance ----
+function deskLiveAPY(k){
+  const d=S.desks[k];if(!d)return 0;
+  if(k==='deltaNeutral')return d.fundingRate!=null?Math.max(0,d.fundingRate*24*365*100):0;
+  if(k==='lending')return d.curAPY!=null?d.curAPY:0;
+  if(k==='lstBasis')return d.stakingAPY!=null?Math.max(0,d.stakingAPY-1.0):0;
+  if(k==='depeg'){const rt=(Date.now()-new Date(S.stats.sinceInception).getTime())/3600000;return rt>0?Math.max(0,(S.portfolio.realizedPnl/S.portfolio.startCapital*100)*(24/rt)*365):0;}
+  return 0;
+}
+function updateVault(){
+  const v=S.vault;const now=Date.now();const keys=['depeg','deltaNeutral','lending','lstBasis'];
+  // blended APY = allocation-weighted sum of each desk's live APY
+  let blendedAPY=0;const apyByDesk={};
+  for(const k of keys){const a=deskLiveAPY(k);apyByDesk[k]=a;blendedAPY+=v.alloc[k]*a;}
+  // accrue the aggregated vault balance at the blended APY
+  const hrs=(now-v.lastUpdate)/3600000;
+  if(hrs>0&&blendedAPY>0)v.balance*=(1+(blendedAPY/100)*(hrs/8760));
+  v.lastUpdate=now;
+  // record histories (cap 500)
+  v.history.push({t:now,bal:Number(v.balance.toFixed(2))});if(v.history.length>500)v.history=v.history.slice(-500);
+  v.apyHistory.push({t:now,apy:Number(blendedAPY.toFixed(3)),byDesk:{...apyByDesk}});if(v.apyHistory.length>500)v.apyHistory=v.apyHistory.slice(-500);
+  v.allocHistory.push({t:now,alloc:{...v.alloc}});if(v.allocHistory.length>500)v.allocHistory=v.allocHistory.slice(-500);
+  // REBALANCE every 24h: move 10% from the others into the best-performing desk
+  if(now-v.lastRebalance>=24*3600000){
+    // best desk = highest live APY this period
+    let best=keys[0];for(const k of keys)if(apyByDesk[k]>apyByDesk[best])best=k;
+    const shift=0.10;const others=keys.filter(k=>k!==best);
+    // pull proportionally from others, add to best (floor others at 5%)
+    let pulled=0;
+    for(const k of others){const take=Math.min(v.alloc[k]-0.05,shift/others.length);if(take>0){v.alloc[k]-=take;pulled+=take;}}
+    v.alloc[best]+=pulled;
+    v.lastRebalance=now;v.rebalanceCount++;
+    push(`REBALANCE #${v.rebalanceCount}: +${(pulled*100).toFixed(0)}% → ${S.desks[best].name} (best APY ${apyByDesk[best].toFixed(1)}%). New alloc: depeg ${(v.alloc.depeg*100).toFixed(0)}% / DN ${(v.alloc.deltaNeutral*100).toFixed(0)}% / lend ${(v.alloc.lending*100).toFixed(0)}% / lst ${(v.alloc.lstBasis*100).toFixed(0)}%`,'warn');
+  }
+  v.blendedAPY=blendedAPY;v.apyByDesk=apyByDesk;
+  // persist
+  try{fs.appendFileSync(VAULT_CSV,`${new Date().toISOString()},${v.balance.toFixed(2)},${blendedAPY.toFixed(3)},${v.alloc.depeg.toFixed(3)},${v.alloc.deltaNeutral.toFixed(3)},${v.alloc.lending.toFixed(3)},${v.alloc.lstBasis.toFixed(3)},${v.rebalanceCount}\n`);}catch{}
 }
 
 // ---- CURATED VAULT COMPETITORS: delta-neutral / managed vaults = nUSD's direct rivals ----
@@ -417,6 +479,10 @@ http.createServer((req,res)=>{
 
 push(`DUMPSTR DEPEG ENGINE v3 · PAPER · $${CFG.START_USD} · Jupiter ${S.jup} · ${STABLES.length} coins/call · buy@${(CFG.DEPEG_BPS*100).toFixed(2)}% sell@${(CFG.SELL_BPS*100).toFixed(2)}%`);
 push(`lifetime: ${ledger.trades.length} trades · $${(ledger.realizedPnl||0).toFixed(2)} realized since ${ledger.sinceInception?.slice(0,10)}`,'ok');
+// RESTORE vault (balance + allocation) from disk so rebalancing survives restarts
+try{if(fs.existsSync(VAULT_CSV)){const L=fs.readFileSync(VAULT_CSV,'utf8').trim().split('\n');if(L.length>1){const r=L[L.length-1].split(',');
+  if(r.length>=8){S.vault.balance=Number(r[1])||50000;S.vault.alloc={depeg:Number(r[3]),deltaNeutral:Number(r[4]),lending:Number(r[5]),lstBasis:Number(r[6])};S.vault.rebalanceCount=Number(r[7])||0;
+  push(`restored vault: $${S.vault.balance.toFixed(2)} · ${S.vault.rebalanceCount} rebalances · alloc depeg ${(S.vault.alloc.depeg*100).toFixed(0)}%/DN ${(S.vault.alloc.deltaNeutral*100).toFixed(0)}%/lend ${(S.vault.alloc.lending*100).toFixed(0)}%/lst ${(S.vault.alloc.lstBasis*100).toFixed(0)}%`,'ok');}}}}catch{}
 // RESTORE desk equities from disk so the four-desk experiment survives restarts
 try{if(fs.existsSync(DESKS_CSV)){const lines=fs.readFileSync(DESKS_CSV,'utf8').trim().split('\n');if(lines.length>1){const last=lines[lines.length-1].split(',');
   if(last.length>=5){S.desks.depeg.equity=Number(last[1])||50000;S.desks.deltaNeutral.equity=Number(last[2])||50000;S.desks.lending.equity=Number(last[3])||50000;S.desks.lstBasis.equity=Number(last[4])||50000;
@@ -436,6 +502,7 @@ while(true){
   }}
   if(S.cycle%12===5){const ls=await fetchLST();if(ls!=null)S.desks.lstBasis.stakingAPY=ls;}
   updateDesks();
+  updateVault();
   if(S.cycle%24===2){try{S.competitors=await fetchCompetitors();}catch{} try{S.kaminoVaults=await fetchKaminoVaults();}catch{} try{S.curatedVaults=await fetchCurated();
     // log competitor TVLs timeline
     const row=new Date().toISOString()+','+[...S.competitors,...S.curatedVaults].map(c=>`${c.name}:${c.tvl!=null?Math.round(c.tvl):''}`).join(';');
