@@ -53,7 +53,7 @@ td{padding:6px 10px;text-align:right;border-bottom:1px solid #0F1E22;white-space
   <div class="kpi"><div class="v" id="kTrades">0</div><div class="l">Closed (W/L)</div></div>
 </div>
 <div class="inst"><h2>⚖️ THREE-DESK COMPARISON <span class="c" id="deskStat">Depeg vs Delta-Neutral vs Lending · each $50k</span></h2><div class="body">
-  <div id="deskCards" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px"></div>
+  <div id="deskCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px"></div>
   <canvas id="deskChart" style="width:100%;height:200px"></canvas>
 </div></div>
 <div class="inst"><h2>📈 EQUITY CURVE <span class="c" id="chartStat">portfolio value over time</span></h2><div class="body"><canvas id="equityChart" style="width:100%;height:180px"></canvas></div></div>
@@ -63,10 +63,10 @@ td{padding:6px 10px;text-align:right;border-bottom:1px solid #0F1E22;white-space
 <div class="inst"><h2>🌍 MARKET-WIDE STABLECOIN FEED <span class="c" id="geckoStat">CoinGecko · top 14 by mcap</span></h2><div class="body"><div id="gecko" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px"></div></div></div>
 <div class="inst"><h2>📊 LENDING AGGREGATE <span class="c" id="aggStat">the whole lending landscape, aggregated</span></h2><div class="body" id="lendingAgg"><span style="color:var(--mut)">aggregating…</span></div></div>
 <div class="inst"><h2>🏦 LENDING MONITOR <span class="c" id="lendStat">real Solana yields · Carrot-style base</span></h2><div class="body"><div id="lending" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px"></div></div></div>
-<div class="inst"><h2>🟡 nUSD BLENDED APY <span class="c" id="nusdStat">70% lending + 20% depeg + 10% buffer</span></h2><div class="body" id="nusdBlend"><span style="color:var(--mut)">calculating…</span></div></div>
+<div class="inst"><h2>🟡 nUSD BLENDED APY <span class="c" id="nusdStat">50% depeg + 40% delta-neutral + 10% lending</span></h2><div class="body" id="nusdBlend"><span style="color:var(--mut)">calculating…</span></div></div>
 <div class="inst"><h2>🎯 COMPETITOR TRACKER <span class="c" id="compStat">market-share intel · wounded protocols</span></h2><div class="body"><div id="competitors" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px"></div></div></div>
 <div class="inst"><h2>🌊 KAMINO STABLECOIN VAULTS <span class="c" id="kamStat">their ecosystem · reward tokens</span></h2><div class="body"><div id="kaminoVaults" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px"></div></div></div>
-  <div class="inst"><h2>⚔️ CURATED VAULT RIVALS <span class="c" id="curStat">delta-neutral / managed vaults — nUSD's real competitors</span></h2><div class="body"><div id="curatedVaults" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px"></div></div></div>
+<div class="inst"><h2>⚔️ CURATED VAULT RIVALS <span class="c" id="curStat">delta-neutral / managed vaults — nUSD's real competitors</span></h2><div class="body"><div id="curatedVaults" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px"></div></div></div>
 <div class="inst"><h2>💰 CLOSED TRADES <span class="c" id="tradeStat">none yet</span></h2><div class="body" style="padding:0"><table><thead><tr><th>Time</th><th>Coin</th><th>Entry</th><th>Exit</th><th>Size</th><th>PnL</th><th>ROI</th><th>Held</th></tr></thead><tbody id="trades"><tr><td colspan="8" style="text-align:center;color:var(--mut);padding:16px">waiting for first completed trade</td></tr></tbody></table></div></div>
 <div class="inst"><h2>OPEN POSITIONS <span class="c" id="posStat">flat</span></h2><div class="body" id="positions"><span style="color:var(--mut)">no open positions</span></div></div>
 </div>
@@ -76,7 +76,7 @@ let soundOn=true, lastTradeCount=0, lastEventTime=0, prevHolding={};
 $('sndBtn').onclick=()=>{soundOn=!soundOn;$('sndBtn').textContent=soundOn?'🔊 SOUND ON':'🔇 SOUND OFF';if(soundOn)beep(660,0.1);};
 let actx;
 function beep(freq,dur,type='sine'){if(!soundOn)return;try{actx=actx||new(window.AudioContext||window.webkitAudioContext)();const o=actx.createOscillator(),g=actx.createGain();o.connect(g);g.connect(actx.destination);o.type=type;o.frequency.value=freq;g.gain.setValueAtTime(.12,actx.currentTime);g.gain.exponentialRampToValueAtTime(.001,actx.currentTime+dur);o.start();o.stop(actx.currentTime+dur);}catch{}}
-function cashRegister(){
+function cashRegister(){ // ka-ching!
   if(!soundOn)return;
   beep(1320,0.08,'square');
   setTimeout(()=>beep(1760,0.15,'square'),90);
@@ -94,7 +94,9 @@ async function tick(){
     $('kRoi').textContent=(pf.roi>=0?'+':'')+pf.roi.toFixed(3)+'%';$('kRoi').className='v '+(pf.roi>=0?'g':'r');
     $('kOpen').textContent=s.positions.length+' / $'+pf.deployed.toFixed(0);
     $('kTrades').textContent=`${s.stats.trades} (${s.stats.wins}W/${s.stats.losses}L)`;
+    // sound triggers
     if(s.lastEvent&&s.lastEvent.at>lastEventTime){lastEventTime=s.lastEvent.at;if(s.lastEvent.type==='BUY')buyBeep();if(s.lastEvent.type==='SELL')cashRegister();}
+    // cards
     const alerts=s.stables.filter(x=>x.alert).length;
     $('boardStat').textContent=`${s.stables.length} coins · ${alerts} live signal${alerts!==1?'s':''}`;
     $('cards').innerHTML=s.stables.map(x=>{
@@ -119,6 +121,7 @@ async function tick(){
         <div class="pools">${pools.length?pools.map(p=>`<div class="pl"><span>${p.name}</span><span>$${(p.liq/1000).toFixed(0)}k</span></div>`).join(''):'<div class="pl">…</div>'}</div>
       </div>`;
     }).join('');
+    // Lending Aggregate console
     if(s.lendingAgg){
       const a=s.lendingAgg;
       $('aggStat').textContent=`${a.pools} pools · ${a.protos.length} protocols · $${(a.totalTVL/1e6).toFixed(0)}M total`;
@@ -138,6 +141,7 @@ async function tick(){
             </div>`;}).join('')}
         </div>`;
     }
+    // Lending Monitor
     if(s.lending&&s.lending.length){
       $('lendStat').textContent=`${s.lending.length} live pools · 30% max per protocol`;
       $('lending').innerHTML=s.lending.map(l=>{
@@ -149,16 +153,19 @@ async function tick(){
         </div>`;
       }).join('');
     }
+    // nUSD blended APY
     if(s.blended){
       const b=s.blended;
-      $('nusdBlend').innerHTML=`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">
+      $('nusdBlend').innerHTML=`<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px">
         <div><div style="font-family:var(--disp);font-size:30px;color:var(--cyan)">${b.depositorAPY.toFixed(1)}%</div><div style="font-size:10px;color:var(--mut);text-transform:uppercase">nUSD depositor APY</div></div>
-        <div><div style="font-family:var(--disp);font-size:22px">${b.bestLendAPY.toFixed(1)}%</div><div style="font-size:10px;color:var(--mut);text-transform:uppercase">Lending base (70%)</div></div>
-        <div><div style="font-family:var(--disp);font-size:22px;color:${b.depegAPY>0?'var(--green)':'var(--mut)'}">${b.depegAPY.toFixed(1)}%</div><div style="font-size:10px;color:var(--mut);text-transform:uppercase">Depeg boost (20%)</div></div>
-        <div><div style="font-family:var(--disp);font-size:22px;color:var(--amber)">$${b.perfFee.toFixed(0)}</div><div style="font-size:10px;color:var(--mut);text-transform:uppercase">Perf fee /$100 yield</div></div>
+        <div><div style="font-family:var(--disp);font-size:20px;color:var(--cyan)">${b.depegAPY.toFixed(1)}%</div><div style="font-size:10px;color:var(--mut);text-transform:uppercase">Depeg (50%)</div></div>
+        <div><div style="font-family:var(--disp);font-size:20px;color:var(--green)">${(b.dnAPY||0).toFixed(1)}%</div><div style="font-size:10px;color:var(--mut);text-transform:uppercase">Delta-neutral (40%)</div></div>
+        <div><div style="font-family:var(--disp);font-size:20px;color:var(--amber)">${b.bestLendAPY.toFixed(1)}%</div><div style="font-size:10px;color:var(--mut);text-transform:uppercase">Lending (10%)</div></div>
+        <div><div style="font-family:var(--disp);font-size:20px;color:var(--amber)">$${b.perfFee.toFixed(0)}</div><div style="font-size:10px;color:var(--mut);text-transform:uppercase">Perf fee /$100</div></div>
       </div>
-      <div style="margin-top:10px;font-size:11px;color:var(--mut)">◆ Blended gross ${b.blendedGross.toFixed(1)}% → depositors get ${b.depositorAPY.toFixed(1)}% after 15% performance fee. Depeg boost annualized from live desk realized PnL (UNPROVEN — needs weeks of data).</div>`;
+      <div style="margin-top:10px;font-size:11px;color:var(--mut)">◆ ${b.weights}. Blended gross ${b.blendedGross.toFixed(1)}% → depositors get ${b.depositorAPY.toFixed(1)}% after 15% fee. ⚠ Depeg APY is annualized from a short window — UNPROVEN and lumpy. Weighting the least-proven engine highest raises risk.</div>`;
     }
+    // Competitor tracker
     if(s.competitors&&s.competitors.length){
       const tagColor={dead:'var(--red)',wounded:'var(--amber)',stable:'var(--cyan)',rival:'var(--mut)'};
       $('competitors').innerHTML=s.competitors.map(c=>{
@@ -170,6 +177,7 @@ async function tick(){
         </div>`;
       }).join('');
     }
+    // Kamino vaults
     if(s.kaminoVaults&&s.kaminoVaults.length){
       $('kaminoVaults').innerHTML=s.kaminoVaults.map(v=>`
         <div style="background:#081114;border:1px solid ${v.reward>0?'var(--amber)':'var(--rim)'};border-radius:7px;padding:9px">
@@ -178,6 +186,7 @@ async function tick(){
           <div style="font-size:9px;color:var(--mut)">base ${v.base.toFixed(1)}%${v.reward>0?' +rew '+v.reward.toFixed(1)+'%':''} · $${(v.tvl/1e6).toFixed(0)}M</div>
         </div>`).join('');
     }
+    // Curated vault rivals
     if(s.curatedVaults&&s.curatedVaults.length){
       const tc={giant:'var(--amber)',rival:'var(--cyan)'};
       $('curatedVaults').innerHTML=s.curatedVaults.map(c=>{
@@ -190,7 +199,9 @@ async function tick(){
       }).join('');
     }
     $('trades').innerHTML=s.trades.length?s.trades.map(t=>`<tr><td>${t.t}</td><td class="c">${t.sym}</td><td>${t.entry.toFixed(5)}</td><td>${t.exit.toFixed(5)}</td><td>$${t.sizeUSD.toFixed(0)}</td><td class="${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</td><td class="${t.roi>=0?'up':'dn'}">${t.roi>=0?'+':''}${t.roi.toFixed(3)}%</td><td>${t.held}s</td></tr>`).join(''):'<tr><td colspan="8" style="text-align:center;color:var(--mut);padding:16px">waiting for first completed trade</td></tr>';
+    // positions
     const pos=s.positions||[];
+    // POSITION MONITOR — prominent live tracker
     if(pos.length){
       $('monitorInst').style.display='block';
       $('monStat').textContent=`${pos.length} HOLDING · $${pf.deployed.toFixed(0)} deployed`;
@@ -198,6 +209,7 @@ async function tick(){
         const cur=p.cur||p.entry;
         const target=p.target||0.9995;
         const pnl=p.unrealPnl||0;
+        const distToTarget=((target-cur)/cur*100);
         const status=cur>=target?'🟢 TARGET HIT — selling':'⏳ HOLDING — waiting for repeg to '+target.toFixed(5);
         const progress=Math.max(0,Math.min(100,((cur-p.entry)/(target-p.entry))*100));
         return `<div style="background:#081114;border:1px solid var(--cyan);border-radius:9px;padding:14px;margin-bottom:10px;box-shadow:0 0 16px #22E0FF22">
@@ -224,16 +236,18 @@ async function tick(){
     $('posStat').textContent=pos.length?`${pos.length} open · $${pf.deployed.toFixed(0)} deployed`:'flat';
     $('positions').innerHTML=pos.length?pos.map(p=>`<div class="rl" style="font-size:12px;padding:5px 0"><span class="c">${p.side.toUpperCase()} ${p.sym} · $${p.sizeUSD.toFixed(0)}</span><span>entry ${p.entry.toFixed(5)} · ${p.age}s ago</span></div>`).join(''):'<span style="color:var(--mut)">no open positions — waiting for depeg</span>';
     $('log').innerHTML=s.log.map(l=>`<div><span class="t">${l.t}</span> <span class="${l.cls}">${l.m}</span></div>`).join('');
+    // THREE-DESK COMPARISON
     if(s.desks){
       const desks=[
         {k:'depeg',color:'#22E0FF',label:'DEPEG DESK'},
         {k:'deltaNeutral',color:'#00E676',label:'DELTA-NEUTRAL'},
         {k:'lending',color:'#FFB020',label:'LENDING AGG'},
+        {k:'lstBasis',color:'#C77DFF',label:'LST-BASIS'},
       ];
       $('deskCards').innerHTML=desks.map(d=>{
         const dk=s.desks[d.k];if(!dk)return '';
         const pnl=dk.equity-dk.start;const roi=pnl/dk.start*100;
-        const extra=d.k==='deltaNeutral'&&dk.fundingRate!=null?`funding ${(dk.fundingRate*24*365*100).toFixed(1)}% APY`:(d.k==='lending'&&dk.curAPY!=null?`best pool ${dk.curAPY.toFixed(2)}%`:(d.k==='depeg'?'live USDe trades':''));
+        const extra=d.k==='deltaNeutral'&&dk.fundingRate!=null?`BTC/ETH/SOL avg ${(dk.fundingRate*24*365*100).toFixed(1)}%`:(d.k==='lending'&&dk.curAPY!=null?`best pool ${dk.curAPY.toFixed(2)}%`:(d.k==='lstBasis'&&dk.stakingAPY!=null?`jitoSOL ${dk.stakingAPY.toFixed(2)}% - hedge`:(d.k==='depeg'?'live USDe trades':'')));
         return `<div style="background:#081114;border:1px solid ${d.color};border-radius:8px;padding:14px">
           <div style="font-family:var(--disp);font-size:12px;color:${d.color};letter-spacing:.05em">${d.label}</div>
           <div style="font-family:var(--disp);font-size:26px;font-weight:900;margin:4px 0">$${dk.equity.toFixed(2)}</div>
@@ -263,6 +277,7 @@ async function tick(){
         }
       }
     }
+    // equity curve chart
     if(s.equityHistory&&s.equityHistory.length>1){
       const cv=$('equityChart');const ctx=cv.getContext('2d');
       const w=cv.width=cv.offsetWidth*2,h=cv.height=360;ctx.scale(1,1);
@@ -270,16 +285,20 @@ async function tick(){
       const eqs=data.map(d=>d.eq);const min=Math.min(...eqs,start),max=Math.max(...eqs,start);
       const range=(max-min)||1;const pad=40;
       ctx.clearRect(0,0,w,h);
+      // baseline (start capital)
       const baseY=h-pad-((start-min)/range)*(h-2*pad);
       ctx.strokeStyle='#1E3840';ctx.lineWidth=1;ctx.setLineDash([4,4]);
       ctx.beginPath();ctx.moveTo(pad,baseY);ctx.lineTo(w-pad,baseY);ctx.stroke();ctx.setLineDash([]);
       ctx.fillStyle='#4C6068';ctx.font='18px monospace';ctx.fillText('$'+start,4,baseY-4);
+      // equity line
       const last=eqs[eqs.length-1];const up=last>=start;
       ctx.strokeStyle=up?'#00E676':'#FF3B3B';ctx.lineWidth=2.5;ctx.beginPath();
       data.forEach((d,i)=>{const x=pad+(i/(data.length-1))*(w-2*pad);const y=h-pad-((d.eq-min)/range)*(h-2*pad);i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
       ctx.stroke();
+      // fill under
       ctx.lineTo(w-pad,h-pad);ctx.lineTo(pad,h-pad);ctx.closePath();
       ctx.fillStyle=up?'rgba(0,230,118,0.08)':'rgba(255,59,59,0.08)';ctx.fill();
+      // current value label
       ctx.fillStyle=up?'#00E676':'#FF3B3B';ctx.font='bold 22px monospace';
       ctx.fillText('$'+last.toFixed(2),w-pad-160,30);
       $('chartStat').textContent=`${data.length} samples · ${up?'+':''}$${(last-start).toFixed(2)}`;
