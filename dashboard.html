@@ -331,7 +331,7 @@ async function tick(){
         });
       }
       $('vaultStat').textContent=`$${v.balance.toFixed(2)} · blended ${(v.blendedAPY||0).toFixed(1)}% · ${v.rebalanceCount} rebalances`;
-      $('vaultInfo').innerHTML=`◆ Aggregated vault auto-shifts 10% toward the best desk every 24h. Current: depeg ${(v.alloc.depeg*100).toFixed(0)}% · delta-neutral ${(v.alloc.deltaNeutral*100).toFixed(0)}% · lending ${(v.alloc.lending*100).toFixed(0)}% · LST ${(v.alloc.lstBasis*100).toFixed(0)}%. ⚠ Momentum rebalancing chases recent winners — watch whether it truly beats a fixed split or just curve-fits.`;
+      $('vaultInfo').innerHTML=`◆ Total balance = sum of all 4 desks ($200k start). Blended APY auto-shifts 10% toward the best desk every 24h. Current: depeg ${(v.alloc.depeg*100).toFixed(0)}% · delta-neutral ${(v.alloc.deltaNeutral*100).toFixed(0)}% · lending ${(v.alloc.lending*100).toFixed(0)}% · LST ${(v.alloc.lstBasis*100).toFixed(0)}%. ⚠ Momentum rebalancing chases recent winners — watch whether it truly beats a fixed split or just curve-fits.`;
     }
     // equity curve chart
     if(s.equityHistory&&s.equityHistory.length>1){
