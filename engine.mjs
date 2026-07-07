@@ -75,7 +75,7 @@ const S={
   },
   // AGGREGATED VAULT: single pool, allocation rebalances 10% toward best desk every 24h
   vault:{
-    balance:50000,start:50000,history:[],apyHistory:[],
+    balance:200000,start:200000,history:[],apyHistory:[],
     alloc:{depeg:0.25,deltaNeutral:0.25,lending:0.25,lstBasis:0.25}, // starts equal
     allocHistory:[],lastRebalance:Date.now(),rebalanceCount:0,lastUpdate:Date.now(),
   },
@@ -191,12 +191,11 @@ function deskLiveAPY(k){
 }
 function updateVault(){
   const v=S.vault;const now=Date.now();const keys=['depeg','deltaNeutral','lending','lstBasis'];
-  // blended APY = allocation-weighted sum of each desk's live APY
+  // blended APY = allocation-weighted sum of each desk's live APY (a RATE, independent of pool size)
   let blendedAPY=0;const apyByDesk={};
   for(const k of keys){const a=deskLiveAPY(k);apyByDesk[k]=a;blendedAPY+=v.alloc[k]*a;}
-  // accrue the aggregated vault balance at the blended APY
-  const hrs=(now-v.lastUpdate)/3600000;
-  if(hrs>0&&blendedAPY>0)v.balance*=(1+(blendedAPY/100)*(hrs/8760));
+  // TOTAL VAULT BALANCE = SUM of all four desks (each started $50k, so starts at $200k combined)
+  v.balance=keys.reduce((sum,k)=>sum+(S.desks[k]?S.desks[k].equity:50000),0);
   v.lastUpdate=now;
   // record histories (cap 500)
   v.history.push({t:now,bal:Number(v.balance.toFixed(2))});if(v.history.length>500)v.history=v.history.slice(-500);
@@ -481,7 +480,7 @@ push(`DUMPSTR DEPEG ENGINE v3 · PAPER · $${CFG.START_USD} · Jupiter ${S.jup} 
 push(`lifetime: ${ledger.trades.length} trades · $${(ledger.realizedPnl||0).toFixed(2)} realized since ${ledger.sinceInception?.slice(0,10)}`,'ok');
 // RESTORE vault (balance + allocation) from disk so rebalancing survives restarts
 try{if(fs.existsSync(VAULT_CSV)){const L=fs.readFileSync(VAULT_CSV,'utf8').trim().split('\n');if(L.length>1){const r=L[L.length-1].split(',');
-  if(r.length>=8){S.vault.balance=Number(r[1])||50000;S.vault.alloc={depeg:Number(r[3]),deltaNeutral:Number(r[4]),lending:Number(r[5]),lstBasis:Number(r[6])};S.vault.rebalanceCount=Number(r[7])||0;
+  if(r.length>=8){S.vault.alloc={depeg:Number(r[3]),deltaNeutral:Number(r[4]),lending:Number(r[5]),lstBasis:Number(r[6])};S.vault.rebalanceCount=Number(r[7])||0;
   push(`restored vault: $${S.vault.balance.toFixed(2)} · ${S.vault.rebalanceCount} rebalances · alloc depeg ${(S.vault.alloc.depeg*100).toFixed(0)}%/DN ${(S.vault.alloc.deltaNeutral*100).toFixed(0)}%/lend ${(S.vault.alloc.lending*100).toFixed(0)}%/lst ${(S.vault.alloc.lstBasis*100).toFixed(0)}%`,'ok');}}}}catch{}
 // RESTORE desk equities from disk so the four-desk experiment survives restarts
 try{if(fs.existsSync(DESKS_CSV)){const lines=fs.readFileSync(DESKS_CSV,'utf8').trim().split('\n');if(lines.length>1){const last=lines[lines.length-1].split(',');
