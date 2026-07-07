@@ -37,9 +37,8 @@ const BORROWABLE={USDC:true,USDT:true,USDe:true,PYUSD:true,USDS:true,FDUSD:false
 const MINTS=STABLES.map(s=>s.mint).join(',');
 const BYMINT=Object.fromEntries(STABLES.map(s=>[s.mint,s.sym]));
 // ---- PER-COIN TUNING: USDe is the proven edge — deeper trigger, bigger allocation, scale-in ----
-// weight = max % of capital for this coin | buyBps = depeg depth to trigger | tranches = max scale-in buys
 const COIN_CFG={
-  USDe:  {weight:0.30, buyBps:20, tranches:3},  // proven wobbler: up to 30%, buy at 0.20%, scale in 3x
+  USDe:  {weight:0.30, buyBps:20, tranches:3},
   FDUSD: {weight:0.15, buyBps:20, tranches:2},
   USD1:  {weight:0.15, buyBps:15, tranches:2},
   USDT:  {weight:0.10, buyBps:15, tranches:1},
@@ -65,18 +64,25 @@ const S={
   portfolio:{cash:CFG.START_USD,deployed:0,equity:CFG.START_USD,realizedPnl:ledger.realizedPnl||0,startCapital:CFG.START_USD,roi:0},
   stables:[],positions:[],poolMap:{},trades:ledger.trades.slice(0,40),log:[],cex:{},gecko:[],
   stats:{signals:0,trades:ledger.trades.length,wins:ledger.wins||0,losses:ledger.losses||0,rateLimitHits:0,sinceInception:ledger.sinceInception},
-  lastEvent:null,lastPrices:{},equityHistory:[],priceHistory:{},
+  lastEvent:null,lastPrices:{},equityHistory:[],priceHistory:{},lending:[],apyLog:[],blended:null,competitors:[],kaminoVaults:[],curatedVaults:[],lendingAgg:null,
+  desks:{
+    depeg:{name:'Depeg Desk',equity:50000,start:50000,history:[],lastUpdate:Date.now()},
+    deltaNeutral:{name:'Delta-Neutral',equity:50000,start:50000,history:[],lastUpdate:Date.now(),fundingRate:null},
+    lending:{name:'Lending Aggregator',equity:50000,start:50000,history:[],lastUpdate:Date.now(),curAPY:null},
+  },
 };
 const ts=()=>new Date().toISOString().slice(11,19);
 const LOG_FILE=new URL('./engine.log',import.meta.url);
 const PRICE_CSV=new URL('./prices.csv',import.meta.url);
-// write CSV header once if file doesn't exist
 try{if(!fs.existsSync(PRICE_CSV))fs.writeFileSync(PRICE_CSV,'timestamp,'+STABLES.map(s=>s.sym).join(',')+'\n');}catch{}
+const APY_CSV=new URL('./apy-timeline.csv',import.meta.url);
+const COMP_CSV=new URL('./competitors-timeline.csv',import.meta.url);
+try{if(!fs.existsSync(COMP_CSV))fs.writeFileSync(COMP_CSV,'timestamp,name:tvl_pairs\n');}catch{}
+try{if(!fs.existsSync(APY_CSV))fs.writeFileSync(APY_CSV,'timestamp,nUSD_depositor_APY,best_lending_APY,depeg_APY\n');}catch{}
 const push=(m,cls='')=>{S.log.unshift({t:ts(),m,cls});S.log=S.log.slice(0,150);const line=`[${new Date().toISOString()}] ${m}`;console.log(line);try{fs.appendFileSync(LOG_FILE,line+'\n');}catch{}};
 
 async function jfetch(url,opts={},tries=3){for(let i=0;i<tries;i++){try{const r=await fetch(url,{...opts,headers:{...jupHeaders,...(opts.headers||{})},signal:AbortSignal.timeout(12000)});if(r.status===429){S.stats.rateLimitHits++;await sleep(3000*(i+1));continue;}if(r.ok)return await r.json();}catch{}await sleep(600*(i+1));}return null;}
 
-// ONE call gets all prices — 16x fewer requests than quoting each
 async function fetchPrices(){
   const d=await jfetch(`https://api.jup.ag/price/v3?ids=${MINTS}`);
   if(!d)return null;
@@ -86,7 +92,116 @@ async function fetchPrices(){
 }
 async function poolsFor(mint){const d=await jfetch(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${mint}/pools?page=1`);return (d?.data||[]).map(p=>({name:p.attributes?.name?.slice(0,18)||'?',liq:Math.round(Number(p.attributes?.reserve_in_usd||0))})).filter(p=>p.liq>1000).sort((a,b)=>b.liq-a.liq).slice(0,3);}
 
-// ---- CEX prices (Coinbase + Kraken, free public APIs) ----
+async function fetchFunding(){
+  try{
+    const r=await fetch('https://api.hyperliquid.xyz/info',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'metaAndAssetCtxs'})});
+    const d=await r.json();
+    const uni=d[0].universe, ctx=d[1];
+    for(let i=0;i<uni.length;i++){if(uni[i].name==='SOL')return Number(ctx[i].funding);}
+  }catch{}
+  return null;
+}
+function updateDesks(){
+  const now=Date.now();
+  S.desks.depeg.equity=S.portfolio.startCapital===50000?(50000+S.portfolio.realizedPnl):(50000*(1+S.portfolio.roi/100));
+  const dn=S.desks.deltaNeutral;
+  if(dn.fundingRate!=null){const hrsElapsed=(now-dn.lastUpdate)/3600000;dn.equity*=(1+dn.fundingRate*hrsElapsed);}
+  dn.lastUpdate=now;
+  const lend=S.desks.lending;
+  if(lend.curAPY!=null){const hrsElapsed=(now-lend.lastUpdate)/3600000;lend.equity*=(1+(lend.curAPY/100)*(hrsElapsed/8760));}
+  lend.lastUpdate=now;
+  for(const k of ['depeg','deltaNeutral','lending']){const d=S.desks[k];d.history.push({t:now,eq:Number(d.equity.toFixed(2))});if(d.history.length>500)d.history=d.history.slice(-500);}
+}
+// ---- CURATED VAULT COMPETITORS ----
+const CURATED=[
+  {slug:'ethena',name:'Ethena (USDe)',note:'delta-neutral · funding capture',tag:'giant'},
+  {slug:'gauntlet',name:'Gauntlet (CASH)',note:'curated delta-neutral',tag:'rival'},
+  {slug:'hyperithm',name:'Hyperithm',note:'pro-managed vaults',tag:'rival'},
+];
+async function fetchCurated(){
+  const out=[];
+  for(const c of CURATED){
+    try{const d=await jfetch(`https://api.llama.fi/protocol/${c.slug}`);
+      const tvls=d?.currentChainTvls||{};
+      const total=Object.entries(tvls).filter(([k])=>!k.toLowerCase().includes('borrowed')).reduce((a,[,v])=>a+(typeof v==='number'?v:0),0);
+      out.push({...c,tvl:total});
+    }catch{out.push({...c,tvl:null});}
+    await sleep(120);
+  }
+  const cash=(S.kaminoVaults||[]).find(v=>(v.sym||'').toUpperCase()==='CASH');
+  if(cash)out.push({slug:'cash',name:'CASH vault (live)',note:`${cash.apy.toFixed(2)}% APY on Kamino`,tag:'rival',tvl:cash.tvl});
+  return out;
+}
+
+const COMPETITORS=[
+  {slug:'carrot',name:'Carrot',note:'DIED (Drift)',tag:'dead'},
+  {slug:'perena',name:'Perena',note:'stablecoin · Drift-hit',tag:'stable'},
+  {slug:'neutral-trade',name:'Neutral Trade',note:'Drift-hit $3.7M',tag:'wounded'},
+  {slug:'loopscale',name:'Loopscale',note:'fixed-rate · survivor',tag:'rival'},
+  {slug:'exponent',name:'Exponent',note:'yield-tokenization',tag:'rival'},
+  {slug:'save',name:'Save (Solend)',note:'lending',tag:'rival'},
+  {slug:'drift',name:'Drift',note:'hacked, recovering',tag:'wounded'},
+];
+async function fetchCompetitors(){
+  const out=[];
+  for(const c of COMPETITORS){
+    try{const d=await jfetch(`https://api.llama.fi/protocol/${c.slug}`);
+      const tvls=d?.currentChainTvls||{};
+      const total=Object.entries(tvls).filter(([k])=>!k.toLowerCase().includes('borrowed')).reduce((a,[,v])=>a+(typeof v==='number'?v:0),0);
+      out.push({...c,tvl:total});
+    }catch{out.push({...c,tvl:null});}
+    await sleep(120);
+  }
+  return out;
+}
+async function fetchKaminoVaults(){
+  const d=await jfetch('https://yields.llama.fi/pools');
+  if(!d||!Array.isArray(d.data))return[];
+  const stableSyms=['USDC','USDT','PYUSD','USDS','USDE','USDG','CASH','SYRUPUSDC','USX','USD1','AUSD','FDUSD'];
+  return d.data.filter(p=>p.project==='kamino-lend'&&p.chain==='Solana'
+    &&stableSyms.includes((p.symbol||'').toUpperCase())&&(p.tvlUsd||0)>500000)
+    .map(p=>({sym:p.symbol,apy:p.apy||0,base:p.apyBase||0,reward:p.apyReward||0,tvl:p.tvlUsd,rewardTokens:(p.rewardTokens||[]).length}))
+    .sort((a,b)=>b.tvl-a.tvl).slice(0,15);
+}
+
+const MAX_PROTOCOL_PCT=0.30;
+async function fetchLending(){
+  const d=await jfetch('https://yields.llama.fi/pools');
+  if(!d||!Array.isArray(d.data))return[];
+  const good=d.data.filter(p=>p.chain==='Solana'
+    && ['USDC','USDT','PYUSD','USDS'].includes(p.symbol)
+    && ['kamino-lend','marginfi','solend','save','drift'].includes(p.project)
+    && (p.tvlUsd||0)>1000000 && (p.apy||0)>0.5 && (p.apy||0)<30);
+  const seen={};
+  for(const p of good){const k=p.project+'|'+p.symbol;if(!seen[k]||p.tvlUsd>seen[k].tvlUsd)seen[k]=p;}
+  return Object.values(seen).sort((a,b)=>b.tvlUsd-a.tvlUsd)
+    .map(p=>({project:p.project,symbol:p.symbol,apy:p.apy,tvl:p.tvlUsd}));
+}
+function lendingAggregate(){
+  const l=S.lending;
+  if(!l.length)return null;
+  const apys=l.map(x=>x.apy);
+  const tvls=l.map(x=>x.tvl);
+  const totalTVL=tvls.reduce((a,b)=>a+b,0);
+  const weightedAPY=l.reduce((a,x)=>a+x.apy*x.tvl,0)/totalTVL;
+  const simpleAPY=apys.reduce((a,b)=>a+b,0)/apys.length;
+  const byProto={};
+  for(const x of l){if(!byProto[x.project])byProto[x.project]={tvl:0,apySum:0,n:0};byProto[x.project].tvl+=x.tvl;byProto[x.project].apySum+=x.apy;byProto[x.project].n++;}
+  const protos=Object.entries(byProto).map(([p,d])=>({project:p,tvl:d.tvl,avgAPY:d.apySum/d.n})).sort((a,b)=>b.tvl-a.tvl);
+  return {totalTVL,weightedAPY,simpleAPY,best:Math.max(...apys),worst:Math.min(...apys),pools:l.length,protos};
+}
+function blendedNusdAPY(){
+  const lend=S.lending;
+  if(!lend.length)return null;
+  const bestLendAPY=lend[0]?.apy||0;
+  const runtimeHrs=(Date.now()-new Date(S.stats.sinceInception).getTime())/3600000;
+  const depegDailyPct=runtimeHrs>0?(S.portfolio.realizedPnl/S.portfolio.startCapital*100)*(24/runtimeHrs):0;
+  const depegAPY=depegDailyPct*365;
+  const blended=0.70*bestLendAPY + 0.20*depegAPY + 0.10*0;
+  const afterFee=blended*0.85;
+  return {bestLendAPY,depegAPY:Math.max(0,depegAPY),blendedGross:blended,depositorAPY:afterFee,perfFee:blended*0.15};
+}
+
 const CEX_MAP={USDT:{cb:'USDT-USD',kr:'USDTUSD'},USDC:{cb:null,kr:'USDCUSD'},DAI:{cb:'DAI-USD',kr:'DAIUSD'},PYUSD:{cb:'PYUSD-USD',kr:null}};
 async function fetchCEX(){
   const out={};
@@ -99,11 +214,10 @@ async function fetchCEX(){
   }
   return out;
 }
-// ---- CoinGecko 15-coin stablecoin feed (auto-discovers depegs beyond our list) ----
 async function fetchGecko(){
   const d=await jfetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category=stablecoins&order=market_cap_desc&per_page=15&page=1');
   if(!Array.isArray(d))return[];
-  return d.filter(c=>{const p=c.current_price;return p&&Math.abs(p-1)<0.05;}) // exclude yield-tokens like USDY at 1.13
+  return d.filter(c=>{const p=c.current_price;return p&&Math.abs(p-1)<0.05;})
     .map(c=>({sym:c.symbol.toUpperCase(),price:c.current_price,dev:c.current_price-1,mcap:c.market_cap}));
 }
 
@@ -111,23 +225,19 @@ const positions=new Map();
 async function scan(){
   const prices=await fetchPrices();
   const out=[];
+  if(!prices){S.stables=S.stables.map(s=>({...s}));return;}
+  S.lastPrices=prices;
   for(const s of STABLES){
-    let price=prices?.[s.sym];
-    // POSITION SAFETY: if price fetch failed but we HOLD this coin, use last known — never go blind
-    if(price==null && positions.has(s.sym)) price=S.lastPrices[s.sym];
-    if(price==null){out.push({sym:s.sym,price:null,stale:positions.has(s.sym)});continue;}
-    S.lastPrices[s.sym]=price;
+    const price=prices[s.sym];
+    if(price==null){out.push({sym:s.sym,price:null});continue;}
     const dev=price-1;
-    if(Math.abs(dev)>0.05){out.push({sym:s.sym,price,dev:null,bad:true});continue;}
+    if(Math.abs(dev)>0.05){out.push({sym:s.sym,price,dev,bad:true});continue;}
     const cost=CFG.COST_EST;
     const edge=Math.abs(dev)-cost;
-    const pos=positions.get(s.sym);
-    // BUY cheap
     const cc=cfgFor(s.sym);
     const buyTrigger=cc.buyBps/10000;
-    // TRANCHE size = weight split across allowed tranches (so 3 tranches never exceed the coin's weight cap)
     const trancheSize=(S.portfolio.startCapital*cc.weight)/cc.tranches;
-    // FIRST BUY: coin is cheap past its own trigger
+    let pos=positions.get(s.sym);
     if(!pos && dev<0 && Math.abs(dev)>=buyTrigger && edge>0 && positions.size<CFG.MAX_POSITIONS){
       const size=Math.min(S.portfolio.cash,trancheSize);
       if(size>=10){
@@ -137,19 +247,17 @@ async function scan(){
         push(`BUY ${s.sym} @ ${price.toFixed(5)} | $${size.toFixed(2)} tranche 1/${cc.tranches} | ${(dev*100).toFixed(3)}% cheap, edge +${(edge*100).toFixed(3)}% | target ${(1-CFG.SELL_BPS).toFixed(5)}`,'ok');
       }
     }
-    // SCALE IN (double down): already holding, price dropped ANOTHER 0.10%+ below last buy, tranches remain
     if(pos && pos.side==='long' && pos.tranches<pos.maxTranches && price <= pos.lastBuyPrice*(1-0.0010)){
       const size=Math.min(S.portfolio.cash,trancheSize);
       if(size>=10){
         const newTotal=pos.sizeUSD+size;
-        const newEntry=(pos.entry*pos.sizeUSD+price*size)/newTotal; // weighted avg entry
+        const newEntry=(pos.entry*pos.sizeUSD+price*size)/newTotal;
         pos.entry=newEntry;pos.sizeUSD=newTotal;pos.tranches++;pos.lastBuyPrice=price;
         S.portfolio.cash-=size;S.portfolio.deployed+=size;
         S.lastEvent={type:'BUY',sym:s.sym,at:Date.now()};
         push(`SCALE-IN ${s.sym} @ ${price.toFixed(5)} | +$${size.toFixed(2)} tranche ${pos.tranches}/${pos.maxTranches} | avg entry now ${newEntry.toFixed(5)} | dropped deeper, doubling down`,'warn');
       }
     }
-    // SHORT rich (paper-simulated; live needs inventory/borrow)
     if(!pos && CFG.SHORT && (BORROWABLE[s.sym]||false) && dev>0 && Math.abs(dev)>=CFG.DEPEG_BPS && edge>0 && positions.size<CFG.MAX_POSITIONS){
       const size=Math.min(S.portfolio.cash,S.portfolio.startCapital*CFG.POS_PCT);
       if(size>=10){
@@ -160,7 +268,6 @@ async function scan(){
         push(`SHORT ${s.sym} @ ${price.toFixed(5)} | $${size.toFixed(2)} | ${(dev*100).toFixed(3)}% rich, edge +${(edge*100).toFixed(3)}% | ${borrowable?'EXECUTABLE (borrowable)':'SIM-ONLY (cannot borrow this coin)'}`,borrowable?'warn':'err');
       }
     }
-    // COVER short at repeg (price fell back to peg)
     if(pos && pos.side==='short' && price<=(1+CFG.SELL_BPS)){
       const netPct=(pos.entry-price)-pos.cost;
       const pnl=netPct*pos.sizeUSD;const roi=netPct*100;
@@ -174,7 +281,6 @@ async function scan(){
       push(`COVER ${s.sym} @ ${price.toFixed(5)} | entry ${pos.entry.toFixed(5)} | $${pos.sizeUSD.toFixed(2)} | held ${held}s | PROFIT ${pnl>=0?'+':''}$${pnl.toFixed(2)} | ROI ${roi>=0?'+':''}${roi.toFixed(3)}% [logged]`,pnl>=0?'ok':'err');
       positions.delete(s.sym);
     }
-    // SELL long at repeg
     if(pos && pos.side==='long' && price>=(1-CFG.SELL_BPS)){
       const netPct=(price-pos.entry)-pos.cost;
       const pnl=netPct*pos.sizeUSD;const roi=netPct*100;
@@ -183,7 +289,6 @@ async function scan(){
       const held=((Date.now()-pos.openedAt)/1000).toFixed(0);
       const trade={sym:s.sym,entry:pos.entry,exit:price,sizeUSD:pos.sizeUSD,pnl,roi,held,t:ts(),date:new Date().toISOString()};
       S.trades.unshift(trade);S.trades=S.trades.slice(0,40);
-      // persist permanently
       ledger.trades.unshift(trade);ledger.realizedPnl=S.portfolio.realizedPnl;ledger.wins=S.stats.wins;ledger.losses=S.stats.losses;saveTrades(ledger);
       S.lastEvent={type:'SELL',sym:s.sym,pnl,at:Date.now()};
       push(`SELL ${s.sym} @ ${price.toFixed(5)} | entry ${pos.entry.toFixed(5)} | $${pos.sizeUSD.toFixed(2)} | held ${held}s | PROFIT ${pnl>=0?'+':''}$${pnl.toFixed(2)} | ROI ${roi>=0?'+':''}${roi.toFixed(3)}% [logged]`,pnl>=0?'ok':'err');
@@ -192,7 +297,7 @@ async function scan(){
     const p=positions.get(s.sym);
     const cx=S.cex[s.sym]||{};
     const cexPrice=cx.coinbase||cx.kraken||null;
-    const cexSpread=cexPrice?(price-cexPrice):null; // DEX price minus CEX price
+    const cexSpread=cexPrice?(price-cexPrice):null;
     out.push({sym:s.sym,price,dev,cost,edge,alert:Math.abs(dev)>=CFG.DEPEG_BPS&&edge>0&&(dev<0||(CFG.SHORT&&dev>0)),rich:dev>0,
       cexPrice,cexSpread,cexVenue:cx.coinbase?'CB':cx.kraken?'KR':null,
       holding:!!p,entry:p?.entry,sizeUSD:p?.sizeUSD,unrealPnl:p?((p.side==='short'?(p.entry-price):(price-p.entry))*p.sizeUSD):null});
@@ -201,8 +306,6 @@ async function scan(){
   S.portfolio.equity=S.portfolio.cash+S.portfolio.deployed;
   S.portfolio.roi=((S.portfolio.equity+S.portfolio.realizedPnl-S.portfolio.startCapital)/S.portfolio.startCapital)*100;
   S.positions=[...positions.entries()].map(([sym,p])=>{const cur=S.lastPrices[sym]||p.entry;const upnl=(p.side==='short'?(p.entry-cur):(cur-p.entry))*p.sizeUSD;return{sym,side:p.side,entry:p.entry,sizeUSD:p.sizeUSD,cur,target:p.side==='short'?1+CFG.SELL_BPS:1-CFG.SELL_BPS,age:Math.round((Date.now()-p.openedAt)/1000),unrealPnl:upnl};});
-  // equity curve: total equity incl unrealized, sampled
-  // log all prices this cycle to CSV for full historical charting
   try{const row=new Date().toISOString()+','+STABLES.map(st=>{const c=out.find(o=>o.sym===st.sym);return c&&c.price?c.price.toFixed(5):'';}).join(',');fs.appendFileSync(PRICE_CSV,row+'\n');}catch{}
   for(const o of out){if(o.price){if(!S.priceHistory[o.sym])S.priceHistory[o.sym]=[];S.priceHistory[o.sym].push({t:Date.now(),p:o.price});if(S.priceHistory[o.sym].length>500)S.priceHistory[o.sym]=S.priceHistory[o.sym].slice(-500);}}
   const unreal=S.positions.reduce((a,p)=>a+p.unrealPnl,0);
@@ -231,7 +334,9 @@ http.createServer((req,res)=>{
     md+=`- Lifetime trades: ${st.trades} (${st.wins}W / ${st.losses}L, ${wr}% win rate)\n`;
     md+=`- Open positions: ${S.positions.length} ($${p.deployed.toFixed(2)} deployed)\n`;
     md+=`- Cycles run: ${S.cycle} | Rate-limit hits: ${st.rateLimitHits}\n\n`;
-    md+=`## CURRENT BOARD\n`;
+    md+=`## THREE-DESK COMPARISON (each started $50k)\n`;
+    for(const k of ['depeg','deltaNeutral','lending']){const d=S.desks[k];md+=`- ${d.name}: $${d.equity.toFixed(2)} (${d.equity-d.start>=0?'+':''}$${(d.equity-d.start).toFixed(2)})\n`;}
+    md+=`\n## CURRENT BOARD\n`;
     for(const x of S.stables){if(x.price)md+=`- ${x.sym}: ${x.price.toFixed(5)} (${x.dev!=null?(x.dev*100).toFixed(3):'?'}% off peg)${x.holding?' [HOLDING]':''}${x.alert?' [SIGNAL]':''}\n`;}
     md+=`\n## OPEN POSITIONS\n`;
     for(const pos of S.positions)md+=`- ${pos.side.toUpperCase()} ${pos.sym}: $${pos.sizeUSD} @ ${pos.entry.toFixed(5)}, now ${pos.cur.toFixed(5)}, P&L $${pos.unrealPnl.toFixed(2)}, held ${pos.age}s\n`;
@@ -250,6 +355,14 @@ while(true){
   S.cycle++;
   await scan();
   if(S.cycle%6===1){try{S.cex=await fetchCEX();}catch{} try{S.gecko=await fetchGecko();}catch{}}
+  if(S.cycle%6===3){const f=await fetchFunding();if(f!=null)S.desks.deltaNeutral.fundingRate=f;}
+  updateDesks();
+  if(S.cycle%24===2){try{S.competitors=await fetchCompetitors();}catch{} try{S.kaminoVaults=await fetchKaminoVaults();}catch{} try{S.curatedVaults=await fetchCurated();
+    const row=new Date().toISOString()+','+[...S.competitors,...S.curatedVaults].map(c=>`${c.name}:${c.tvl!=null?Math.round(c.tvl):''}`).join(';');
+    fs.appendFileSync(COMP_CSV,row+'\n');}catch{}}
+  if(S.cycle%12===1){try{S.lending=await fetchLending();S.lendingAgg=lendingAggregate();
+    if(S.lendingAgg)S.desks.lending.curAPY=S.lendingAgg.best;const b=blendedNusdAPY();S.blended=b;if(b){S.apyLog.push({t:Date.now(),depositorAPY:Number(b.depositorAPY.toFixed(2)),lendAPY:Number(b.bestLendAPY.toFixed(2)),depegAPY:Number(b.depegAPY.toFixed(2))});if(S.apyLog.length>500)S.apyLog=S.apyLog.slice(-500);
+    try{fs.appendFileSync(APY_CSV,new Date().toISOString()+','+b.depositorAPY.toFixed(2)+','+b.bestLendAPY.toFixed(2)+','+b.depegAPY.toFixed(2)+'\n');}catch{}}}catch{}}
   push(`cycle ${S.cycle}: equity $${S.portfolio.equity.toFixed(2)} · realized $${S.portfolio.realizedPnl.toFixed(2)} · ROI ${S.portfolio.roi.toFixed(3)}% · ${S.positions.length} open · ${S.stats.trades} lifetime · 429s:${S.stats.rateLimitHits}`);
   if(Date.now()-lastPools>3*60000){await refreshPools();lastPools=Date.now();}
   await sleep(CFG.CYCLE_MS);
