@@ -56,6 +56,15 @@ td{padding:6px 10px;text-align:right;border-bottom:1px solid #0F1E22;white-space
   <div id="deskCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px"></div>
   <canvas id="deskChart" style="width:100%;height:200px"></canvas>
 </div></div>
+<div class="inst"><h2>📊 VAULT ANALYTICS <span class="c" id="vaultStat">aggregated · 24h momentum rebalance</span></h2><div class="body">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div><div style="font-size:11px;color:var(--mut);text-transform:uppercase;margin-bottom:6px">① APY per desk (over time)</div><canvas id="chartAPY" style="width:100%;height:150px"></canvas></div>
+    <div><div style="font-size:11px;color:var(--mut);text-transform:uppercase;margin-bottom:6px">② Total vault balance</div><canvas id="chartBalance" style="width:100%;height:150px"></canvas></div>
+    <div><div style="font-size:11px;color:var(--mut);text-transform:uppercase;margin-bottom:6px">③ Aggregated blended APY</div><canvas id="chartAggAPY" style="width:100%;height:150px"></canvas></div>
+    <div><div style="font-size:11px;color:var(--mut);text-transform:uppercase;margin-bottom:6px">④ Asset dispersion (allocation)</div><canvas id="chartDispersion" style="width:100%;height:150px"></canvas></div>
+  </div>
+  <div id="vaultInfo" style="margin-top:12px;font-size:11px;color:var(--mut)"></div>
+</div></div>
 <div class="inst"><h2>📈 EQUITY CURVE <span class="c" id="chartStat">portfolio value over time</span></h2><div class="body"><canvas id="equityChart" style="width:100%;height:180px"></canvas></div></div>
 <div class="inst"><h2>💠 STABLECOIN DEPEG BOARD <span class="c" id="boardStat">—</span></h2><div class="body"><div class="cards" id="cards"><div style="color:var(--mut);padding:20px">connecting to engine…</div></div></div></div>
 <div class="inst" id="monitorInst" style="border-color:var(--cyan);display:none"><h2 style="color:var(--cyan)">🎯 POSITION MONITOR — LIVE <span class="c" id="monStat"></span></h2><div class="body" id="monitor"></div></div>
@@ -276,6 +285,53 @@ async function tick(){
           });
         }
       }
+    }
+    // VAULT ANALYTICS — four charts
+    if(s.vault){
+      const v=s.vault;
+      const deskMeta=[{k:'depeg',c:'#22E0FF'},{k:'deltaNeutral',c:'#00E676'},{k:'lending',c:'#FFB020'},{k:'lstBasis',c:'#C77DFF'}];
+      const drawLine=(id,series,fmt,baseline)=>{
+        const cv=$(id);if(!cv)return;const ctx=cv.getContext('2d');
+        const w=cv.width=cv.offsetWidth*2,h=cv.height=300;ctx.clearRect(0,0,w,h);
+        let all=[];series.forEach(s=>s.data.forEach(p=>all.push(p.y)));
+        if(baseline!=null)all.push(baseline);
+        if(all.length<2){ctx.fillStyle='#4C6068';ctx.font='16px monospace';ctx.fillText('collecting…',12,h/2);return;}
+        const min=Math.min(...all),max=Math.max(...all),range=(max-min)||1;const pad=40;
+        // y labels
+        ctx.fillStyle='#4C6068';ctx.font='15px monospace';
+        for(let i=0;i<=3;i++){const val=min+range*i/3;const y=h-pad-((val-min)/range)*(h-2*pad);ctx.fillText(fmt(val),4,y+5);ctx.strokeStyle='#12222633';ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-8,y);ctx.stroke();}
+        if(baseline!=null){const by=h-pad-((baseline-min)/range)*(h-2*pad);ctx.strokeStyle='#1E3840';ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(pad,by);ctx.lineTo(w-8,by);ctx.stroke();ctx.setLineDash([]);}
+        series.forEach(s=>{if(s.data.length<2)return;const n=s.data.length;
+          ctx.strokeStyle=s.color;ctx.lineWidth=2;ctx.beginPath();
+          s.data.forEach((p,i)=>{const x=pad+(i/(n-1))*(w-pad-8);const y=h-pad-((p.y-min)/range)*(h-2*pad);i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+          ctx.stroke();
+          const last=s.data[n-1];ctx.fillStyle=s.color;ctx.font='bold 15px monospace';ctx.fillText(fmt(last.y),Math.min(pad+(w-pad-8),w-70),h-pad-((last.y-min)/range)*(h-2*pad)-3);
+        });
+      };
+      // ① APY per desk — reconstruct from vault.apyHistory.byDesk
+      const apyH=v.apyHistory||[];
+      const apySeries=deskMeta.map(d=>({color:d.c,data:apyH.filter(p=>p.byDesk&&p.byDesk[d.k]!=null).map(p=>({y:p.byDesk[d.k]}))})).filter(s=>s.data.length);
+      drawLine('chartAPY',apySeries,x=>x.toFixed(1)+'%',0);
+      // ② Total vault balance
+      drawLine('chartBalance',[{color:'#00E676',data:(v.history||[]).map(p=>({y:p.bal}))}],x=>'$'+x.toFixed(0),v.start);
+      // ③ Aggregated blended APY
+      drawLine('chartAggAPY',[{color:'#22E0FF',data:apyH.map(p=>({y:p.apy}))}],x=>x.toFixed(1)+'%',0);
+      // ④ Asset dispersion — stacked allocation bars (latest)
+      const cv=$('chartDispersion');
+      if(cv&&v.alloc){const ctx=cv.getContext('2d');const w=cv.width=cv.offsetWidth*2,h=cv.height=300;ctx.clearRect(0,0,w,h);
+        const order=['depeg','deltaNeutral','lending','lstBasis'];const colors={depeg:'#22E0FF',deltaNeutral:'#00E676',lending:'#FFB020',lstBasis:'#C77DFF'};
+        const labels={depeg:'Depeg',deltaNeutral:'Delta-N',lending:'Lending',lstBasis:'LST'};
+        let y=30;const barH=(h-60)/4;
+        order.forEach(k=>{const pct=v.alloc[k]||0;
+          ctx.fillStyle='#0A1518';ctx.fillRect(120,y,w-160,barH-14);
+          ctx.fillStyle=colors[k];ctx.fillRect(120,y,(w-160)*pct,barH-14);
+          ctx.fillStyle='#DFF3F0';ctx.font='bold 18px monospace';ctx.fillText(labels[k],8,y+barH/2);
+          ctx.fillStyle=colors[k];ctx.font='bold 18px monospace';ctx.fillText((pct*100).toFixed(0)+'%',w-52,y+barH/2);
+          y+=barH;
+        });
+      }
+      $('vaultStat').textContent=`$${v.balance.toFixed(2)} · blended ${(v.blendedAPY||0).toFixed(1)}% · ${v.rebalanceCount} rebalances`;
+      $('vaultInfo').innerHTML=`◆ Aggregated vault auto-shifts 10% toward the best desk every 24h. Current: depeg ${(v.alloc.depeg*100).toFixed(0)}% · delta-neutral ${(v.alloc.deltaNeutral*100).toFixed(0)}% · lending ${(v.alloc.lending*100).toFixed(0)}% · LST ${(v.alloc.lstBasis*100).toFixed(0)}%. ⚠ Momentum rebalancing chases recent winners — watch whether it truly beats a fixed split or just curve-fits.`;
     }
     // equity curve chart
     if(s.equityHistory&&s.equityHistory.length>1){
